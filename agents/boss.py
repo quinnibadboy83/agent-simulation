@@ -1,6 +1,6 @@
 """
-Boss Agent - The Super Boss you control.
-Now supports Module 2 money commands (dual mode).
+Boss Agent - Super Overseer
+Supports Module 2 (Economy) + Module 3 (Web Research)
 """
 
 from typing import Dict, Any
@@ -16,7 +16,7 @@ class BossAgent(BaseAgent):
             role="Super Overseer",
             memory=memory,
             tools=tools,
-            description="The main commander. You control this agent. Issues orders and keeps everyone in line.",
+            description="The main commander. You control this agent.",
         )
         self.update_status("awaiting_orders")
 
@@ -24,18 +24,12 @@ class BossAgent(BaseAgent):
         cmd = command.strip().lower()
         self.memory.log("Boss", f"Received command: {command}")
 
-        # ---------- Original commands ----------
+        # ---------- Basic commands ----------
         if cmd in ["status", "report", "overview"]:
             return self.full_status_report()
 
         if cmd.startswith("assign ") or cmd.startswith("task "):
             return self._handle_assign(command)
-
-        if cmd.startswith("farm ") or "research" in cmd:
-            topic = command.replace("farm", "").replace("research", "").strip()
-            if not topic:
-                topic = "general opportunities"
-            return self.order_info_farmer(topic)
 
         if cmd in ["balance", "money", "funds"]:
             result = self.execute_tool("check_balance")
@@ -50,19 +44,46 @@ class BossAgent(BaseAgent):
             self.memory.log("Boss", f"Announcement: {message}")
             return f"Announcement logged: {message}"
 
-        # ---------- New Module 2 Money commands ----------
+        # ---------- Web Research commands ----------
+        if cmd.startswith("search ") or cmd.startswith("web "):
+            query = command.split(" ", 1)[1] if " " in command else ""
+            if not query:
+                return "Usage: search <your query>"
+            result = self.execute_tool("web_search", query=query, max_results=5)
+            if result.get("success"):
+                results = result["result"]
+                if not results:
+                    return "No results found."
+                msg = f"Search results for '{query}':\n\n"
+                for i, r in enumerate(results, 1):
+                    msg += f"{i}. {r['title']}\n   {r['url']}\n   {r['snippet'][:150]}...\n\n"
+                return msg
+            return f"Search failed: {result.get('error')}"
+
+        if cmd.startswith("read "):
+            url = command.split(" ", 1)[1] if " " in command else ""
+            if not url.startswith("http"):
+                return "Please provide a full URL starting with http"
+            result = self.execute_tool("read_webpage", url=url)
+            if result.get("success"):
+                page = result["result"]
+                return f"Page: {page['title']}\n\n{page['content'][:2000]}"
+            return f"Failed to read page: {result.get('error')}"
+
+        # ---------- Farm / Research ----------
+        if cmd.startswith("farm ") or "research" in cmd:
+            topic = command.replace("farm", "").replace("research", "").strip()
+            if not topic:
+                topic = "general opportunities"
+            return self.order_info_farmer(topic)
+
+        # ---------- Money commands ----------
         if cmd.startswith("money") or cmd in ["scan", "opportunities"]:
             return self._handle_money_command(command)
 
-        # Default fallback
         return self.think(command)
 
     def _handle_money_command(self, command: str) -> str:
-        """Route money-related commands to the OpportunityAgent."""
-        # We get the OpportunityAgent through the shared agents dict in main,
-        # but for simplicity we call the tools directly or simulate the call.
-        # For now we use the tools and let OpportunityAgent logic live there.
-
         cmd = command.lower().strip()
 
         if cmd in ["money", "money help"]:
@@ -77,18 +98,6 @@ class BossAgent(BaseAgent):
                 return result.get("result", str(result))
             result = self.execute_tool("money_mode")
             return result.get("result", str(result))
-
-        if any(word in cmd for word in ["scan", "find", "discover"]):
-            # Trigger a simple scan via tool
-            # For a cleaner version we will improve this later
-            return (
-                "Sending scan order to OpportunityAgent...\n"
-                "(Full agent routing coming in next improvement)\n"
-                "Try these for now:\n"
-                "- money mode\n"
-                "- money report\n"
-                "- money opportunities"
-            )
 
         if "report" in cmd:
             result = self.execute_tool("economy_report")
@@ -118,75 +127,4 @@ class BossAgent(BaseAgent):
 
         return self.get_money_help()
 
-    def full_status_report(self) -> str:
-        agents = self.memory.get_all_agent_status()
-        tasks = self.memory.get_tasks()
-        pending = [t for t in tasks if t["status"] == "pending"]
-        balance = self.memory.get_balance("Banker")
-        knowledge_count = len(self.memory.data.get("knowledge", []))
-
-        report = "=== BOSS STATUS REPORT ===\n\n"
-        report += f"Bank Balance: ${balance:.2f}\n"
-        report += f"Knowledge entries: {knowledge_count}\n"
-        report += f"Pending tasks: {len(pending)}\n\n"
-
-        report += "Agents:\n"
-        for name, info in agents.items():
-            report += f"  • {name} ({info.get('role')}) - {info.get('status')}\n"
-
-        if pending:
-            report += "\nActive Orders:\n"
-            for t in pending[:5]:
-                report += f"  • [{t['id']}] {t['title']} → {t['assigned_to']}\n"
-
-        return report
-
-    def order_info_farmer(self, topic: str) -> str:
-        task = self.memory.add_task(
-            title=f"Farm info: {topic}",
-            description=f"Gather useful information about: {topic}",
-            assigned_to="InfoFarmer",
-            created_by="Boss",
-        )
-        result = self.execute_tool("farm_info", topic=topic, agent="InfoFarmer")
-        self.memory.update_task(task["id"], "completed", notes="Auto-executed basic farm")
-        
-        return f"Ordered InfoFarmer to research '{topic}'.\nResult: {result.get('result', result)}"
-
-    def _handle_assign(self, command: str) -> str:
-        parts = command.split()
-        if len(parts) < 3:
-            return "Usage: assign <AgentName> <task description>"
-        
-        agent_name = parts[1]
-        task_desc = " ".join(parts[2:])
-        
-        task = self.memory.add_task(
-            title=task_desc[:50],
-            description=task_desc,
-            assigned_to=agent_name,
-            created_by="Boss",
-        )
-        return f"Task created and assigned to {agent_name}:\n[{task['id']}] {task['title']}"
-
-    def get_command_help(self) -> str:
-        return """
-=== BOSS COMMANDS ===
-
-status / report          → Full overview
-balance                  → Check funds
-farm <topic>             → Order InfoFarmer
-assign <Agent> <task>    → Create a task
-say <message>            → Announcement
-help                     → This help
-
-=== MONEY COMMANDS (Module 2) ===
-money mode               → Show current mode
-money mode simulation    → Switch to safe simulation
-money mode real          → Switch to real mode
-money report             → Economy summary
-money opportunities      → List opportunities
-"""
-
-    def get_money_help(self) -> str:
-        return self.get_command_help()
+    def full_status
