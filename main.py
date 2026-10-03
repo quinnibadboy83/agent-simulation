@@ -1,6 +1,5 @@
 """
-Agent Simulation - Module 1 Core
-Mobile-first web interface + multi-agent system
+Agent Simulation - Module 1 + Module 2 (Dual Mode Economy)
 """
 
 from fastapi import FastAPI, Request, Form
@@ -13,13 +12,15 @@ import os
 
 from core.memory import SharedMemory
 from core.world import World
+from core.economy import Economy
 from core.tools import create_default_tools
 from agents.boss import BossAgent
 from agents.banker import BankerAgent
 from agents.info_farmer import InfoFarmerAgent
+from agents.opportunity_agent import OpportunityAgent
 
 # ---------- Setup ----------
-app = FastAPI(title="Agent Simulation - Module 1")
+app = FastAPI(title="Agent Simulation - Module 2")
 
 BASE_DIR = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "ui" / "static"), name="static")
@@ -28,16 +29,19 @@ templates = Jinja2Templates(directory=BASE_DIR / "ui" / "templates")
 # Global systems
 memory = SharedMemory()
 world = World(memory)
-tools = create_default_tools(memory, world)
+economy = Economy(memory)
+tools = create_default_tools(memory, world, economy)
 
 boss = BossAgent(memory, tools)
 banker = BankerAgent(memory, tools)
 info_farmer = InfoFarmerAgent(memory, tools)
+opportunity_agent = OpportunityAgent(memory, tools, economy)
 
 agents = {
     "Boss": boss,
     "Banker": banker,
     "InfoFarmer": info_farmer,
+    "OpportunityAgent": opportunity_agent,
 }
 
 
@@ -50,6 +54,7 @@ async def home(request: Request):
     balance = memory.get_balance("Banker")
     knowledge_count = len(memory.data.get("knowledge", []))
     pending_tasks = memory.get_tasks(status="pending")
+    economy_report = economy.get_economy_report()
 
     return templates.TemplateResponse("index.html", {
         "request": request,
@@ -59,6 +64,7 @@ async def home(request: Request):
         "balance": balance,
         "knowledge_count": knowledge_count,
         "pending_tasks": pending_tasks,
+        "economy": economy_report,
     })
 
 
@@ -72,32 +78,4 @@ async def send_command(command: str = Form(...)):
     return JSONResponse({
         "response": response,
         "balance": memory.get_balance("Banker"),
-        "knowledge_count": len(memory.data.get("knowledge", [])),
-    })
-
-
-@app.get("/api/status")
-async def api_status():
-    return {
-        "world": world.get_summary(),
-        "agents": memory.get_all_agent_status(),
-        "balance": memory.get_balance("Banker"),
-        "knowledge_count": len(memory.data.get("knowledge", [])),
-        "pending_tasks": memory.get_tasks(status="pending"),
-        "logs": memory.get_logs(20),
-    }
-
-
-@app.post("/api/advance_time")
-async def advance_time():
-    world.advance_time()
-    return {"message": "Time advanced", "world": world.get_summary()}
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    print("\n" + "="*50)
-    print("  AGENT SIMULATION - MODULE 1")
-    print(f"  Running on port {port}")
-    print("="*50 + "\n")
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+        "knowledge_count": len(memory.data
