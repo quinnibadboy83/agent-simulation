@@ -1,5 +1,5 @@
 """
-Agent Simulation - Module 1 + Module 2 (Dual Mode Economy)
+Agent Simulation - Module 1 + 2 + 3 (Web Research)
 """
 
 from fastapi import FastAPI, Request, Form
@@ -13,6 +13,7 @@ import os
 from core.memory import SharedMemory
 from core.world import World
 from core.economy import Economy
+from core.research import WebResearch
 from core.tools import create_default_tools
 from agents.boss import BossAgent
 from agents.banker import BankerAgent
@@ -20,7 +21,7 @@ from agents.info_farmer import InfoFarmerAgent
 from agents.opportunity_agent import OpportunityAgent
 
 # ---------- Setup ----------
-app = FastAPI(title="Agent Simulation - Module 2")
+app = FastAPI(title="Agent Simulation - Module 3")
 
 BASE_DIR = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "ui" / "static"), name="static")
@@ -30,7 +31,8 @@ templates = Jinja2Templates(directory=BASE_DIR / "ui" / "templates")
 memory = SharedMemory()
 world = World(memory)
 economy = Economy(memory)
-tools = create_default_tools(memory, world, economy)
+research = WebResearch(memory)
+tools = create_default_tools(memory, world, economy, research)
 
 boss = BossAgent(memory, tools)
 banker = BankerAgent(memory, tools)
@@ -78,34 +80,4 @@ async def send_command(command: str = Form(...)):
     return JSONResponse({
         "response": response,
         "balance": memory.get_balance("Banker"),
-        "knowledge_count": len(memory.data.get("knowledge", [])),
-        "economy_mode": economy.get_mode(),
-    })
-
-
-@app.get("/api/status")
-async def api_status():
-    return {
-        "world": world.get_summary(),
-        "agents": memory.get_all_agent_status(),
-        "balance": memory.get_balance("Banker"),
-        "knowledge_count": len(memory.data.get("knowledge", [])),
-        "pending_tasks": memory.get_tasks(status="pending"),
-        "logs": memory.get_logs(20),
-        "economy": economy.get_economy_report(),
-    }
-
-
-@app.post("/api/advance_time")
-async def advance_time():
-    world.advance_time()
-    return {"message": "Time advanced", "world": world.get_summary()}
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    print("\n" + "="*50)
-    print("  AGENT SIMULATION - MODULE 2 (Dual Mode)")
-    print(f"  Running on port {port}")
-    print("="*50 + "\n")
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+        "knowledge_count": len(
