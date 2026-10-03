@@ -3,7 +3,6 @@ Boss Agent - Super Overseer
 Supports Module 2 (Economy) + Module 3 (Web Research)
 """
 
-from typing import Dict, Any
 from .base_agent import BaseAgent
 from core.memory import SharedMemory
 from core.tools import ToolRegistry
@@ -24,7 +23,6 @@ class BossAgent(BaseAgent):
         cmd = command.strip().lower()
         self.memory.log("Boss", f"Received command: {command}")
 
-        # ---------- Basic commands ----------
         if cmd in ["status", "report", "overview"]:
             return self.full_status_report()
 
@@ -44,7 +42,6 @@ class BossAgent(BaseAgent):
             self.memory.log("Boss", f"Announcement: {message}")
             return f"Announcement logged: {message}"
 
-        # ---------- Web Research commands ----------
         if cmd.startswith("search ") or cmd.startswith("web "):
             query = command.split(" ", 1)[1] if " " in command else ""
             if not query:
@@ -56,7 +53,10 @@ class BossAgent(BaseAgent):
                     return "No results found."
                 msg = f"Search results for '{query}':\n\n"
                 for i, r in enumerate(results, 1):
-                    msg += f"{i}. {r['title']}\n   {r['url']}\n   {r['snippet'][:150]}...\n\n"
+                    title = r.get("title", "")
+                    url = r.get("url", "")
+                    snippet = r.get("snippet", "")[:150]
+                    msg += f"{i}. {title}\n   {url}\n   {snippet}\n\n"
                 return msg
             return f"Search failed: {result.get('error')}"
 
@@ -67,17 +67,15 @@ class BossAgent(BaseAgent):
             result = self.execute_tool("read_webpage", url=url)
             if result.get("success"):
                 page = result["result"]
-                return f"Page: {page['title']}\n\n{page['content'][:2000]}"
+                return f"Page: {page.get('title')}\n\n{str(page.get('content', ''))[:2000]}"
             return f"Failed to read page: {result.get('error')}"
 
-        # ---------- Farm / Research ----------
         if cmd.startswith("farm ") or "research" in cmd:
             topic = command.replace("farm", "").replace("research", "").strip()
             if not topic:
                 topic = "general opportunities"
             return self.order_info_farmer(topic)
 
-        # ---------- Money commands ----------
         if cmd.startswith("money") or cmd in ["scan", "opportunities"]:
             return self._handle_money_command(command)
 
@@ -127,4 +125,70 @@ class BossAgent(BaseAgent):
 
         return self.get_money_help()
 
-    def full_status
+    def full_status_report(self) -> str:
+        agents = self.memory.get_all_agent_status()
+        tasks = self.memory.get_tasks()
+        pending = [t for t in tasks if t["status"] == "pending"]
+        balance = self.memory.get_balance("Banker")
+        knowledge_count = len(self.memory.data.get("knowledge", []))
+
+        report = "=== BOSS STATUS REPORT ===\n\n"
+        report += f"Bank Balance: ${balance:.2f}\n"
+        report += f"Knowledge entries: {knowledge_count}\n"
+        report += f"Pending tasks: {len(pending)}\n\n"
+        report += "Agents:\n"
+        for name, info in agents.items():
+            report += f"  - {name} ({info.get('role')}) - {info.get('status')}\n"
+        return report
+
+    def order_info_farmer(self, topic: str) -> str:
+        task = self.memory.add_task(
+            title=f"Farm info: {topic}",
+            description=f"Gather useful information about: {topic}",
+            assigned_to="InfoFarmer",
+            created_by="Boss",
+        )
+        result = self.execute_tool("farm_info", topic=topic, agent="InfoFarmer")
+        self.memory.update_task(task["id"], "completed", notes="Auto-executed")
+        return f"Ordered InfoFarmer to research '{topic}'.\nResult: {result.get('result', result)}"
+
+    def _handle_assign(self, command: str) -> str:
+        parts = command.split()
+        if len(parts) < 3:
+            return "Usage: assign <AgentName> <task description>"
+        agent_name = parts[1]
+        task_desc = " ".join(parts[2:])
+        task = self.memory.add_task(
+            title=task_desc[:50],
+            description=task_desc,
+            assigned_to=agent_name,
+            created_by="Boss",
+        )
+        return f"Task created and assigned to {agent_name}:\n[{task['id']}] {task['title']}"
+
+    def get_command_help(self) -> str:
+        return """
+=== BOSS COMMANDS ===
+
+status / report          -> System overview
+balance                  -> Check funds
+help                     -> This help
+
+=== WEB RESEARCH ===
+search <query>           -> Search the web
+read <url>               -> Read a public webpage
+
+=== MONEY ===
+money mode               -> Show current mode
+money mode simulation    -> Safe mode
+money mode real          -> Real mode
+money report             -> Economy summary
+money opportunities      -> List opportunities
+
+=== OTHER ===
+farm <topic>             -> InfoFarmer research
+assign <Agent> <task>    -> Create task
+"""
+
+    def get_money_help(self) -> str:
+        return self.get_command_help()
