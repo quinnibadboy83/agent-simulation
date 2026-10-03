@@ -59,7 +59,6 @@ class ToolRegistry:
 def create_default_tools(memory: SharedMemory, world, economy: Economy = None, research: WebResearch = None) -> ToolRegistry:
     registry = ToolRegistry(memory, economy, research)
 
-    # ---------- Original tools ----------
     def log_message(agent: str, message: str):
         memory.log(agent, message)
         return f"Logged: {message}"
@@ -82,7 +81,6 @@ def create_default_tools(memory: SharedMemory, world, economy: Economy = None, r
     registry.register("check_balance", "Check current money balance", check_balance)
     registry.register("create_task", "Create a new task for an agent", create_task)
 
-    # ---------- Economic Tools ----------
     if economy:
         def money_mode(mode: str = None):
             if mode is None:
@@ -114,15 +112,14 @@ def create_default_tools(memory: SharedMemory, world, economy: Economy = None, r
         def economy_report():
             return economy.get_economy_report()
 
-        registry.register("money_mode", "Get or set economy mode (simulation/real)", money_mode)
+        registry.register("money_mode", "Get or set economy mode", money_mode)
         registry.register("find_opportunity", "Create a new opportunity", find_opportunity)
-        registry.register("analyse_opportunity", "Analyse an opportunity by ID", analyse_opportunity)
+        registry.register("analyse_opportunity", "Analyse an opportunity", analyse_opportunity)
         registry.register("list_opportunities", "List opportunities", list_opportunities)
         registry.register("create_experiment", "Start an experiment", create_experiment, requires_approval=True)
         registry.register("complete_experiment", "Complete an experiment", complete_experiment, requires_approval=True)
         registry.register("economy_report", "Full economy report", economy_report)
 
-    # ---------- Web Research Tools ----------
     if research:
         def web_search(query: str, max_results: int = 5):
             return research.search(query, max_results)
@@ -130,4 +127,7 @@ def create_default_tools(memory: SharedMemory, world, economy: Economy = None, r
         def read_webpage(url: str):
             return research.read_page(url)
 
-        registry.register("web_search", "
+        registry.register("web_search", "Search the web for information", web_search)
+        registry.register("read_webpage", "Read the content of a public webpage", read_webpage)
+
+    return registry
