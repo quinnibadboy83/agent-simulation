@@ -13,10 +13,9 @@ class Economy:
     def __init__(self, memory: SharedMemory):
         self.memory = memory
 
-        # Initialise economy section if missing
         if "economy" not in self.memory.data:
             self.memory.data["economy"] = {
-                "mode": "simulation",          # "simulation" or "real"
+                "mode": "simulation",
                 "opportunities": [],
                 "experiments": [],
                 "next_opportunity_id": 1,
@@ -24,9 +23,6 @@ class Economy:
             }
             self.memory.save()
 
-    # ------------------------------------------------------------------
-    # Mode management
-    # ------------------------------------------------------------------
     def get_mode(self) -> str:
         return self.memory.data["economy"].get("mode", "simulation")
 
@@ -47,9 +43,6 @@ class Economy:
     def is_real(self) -> bool:
         return self.get_mode() == "real"
 
-    # ------------------------------------------------------------------
-    # Opportunity management
-    # ------------------------------------------------------------------
     def create_opportunity(
         self,
         name: str,
@@ -72,10 +65,10 @@ class Economy:
             "startup_cost": float(startup_cost),
             "expected_expenses": float(expected_expenses),
             "expected_revenue": float(expected_revenue),
-            "risk": risk,                    # low / medium / high
+            "risk": risk,
             "category": category,
-            "status": "DISCOVERED",          # DISCOVERED → ANALYSED → TESTING → VALIDATED → REJECTED
-            "mode": self.get_mode(),         # record which mode it was created in
+            "status": "DISCOVERED",
+            "mode": self.get_mode(),
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat(),
             "source": source,
@@ -116,7 +109,6 @@ class Economy:
         return opp
 
     def analyse_opportunity(self, opp_id: int) -> Optional[Dict]:
-        """Basic analysis (works in both modes)."""
         opp = self.get_opportunity(opp_id)
         if not opp:
             return None
@@ -143,10 +135,89 @@ class Economy:
         self.memory.log("Economy", f"Analysed opportunity #{opp_id}")
         return analysis
 
-    # ------------------------------------------------------------------
-    # Experiment management
-    # ------------------------------------------------------------------
     def create_experiment(self, opp_id: int, budget: float, notes: str = "") -> Optional[Dict]:
         opp = self.get_opportunity(opp_id)
         if not opp:
             return None
+
+        exp_id = self.memory.data["economy"]["next_experiment_id"]
+        self.memory.data["economy"]["next_experiment_id"] += 1
+
+        experiment = {
+            "id": exp_id,
+            "opportunity_id": opp_id,
+            "budget": float(budget),
+            "status": "RUNNING",
+            "revenue": 0.0,
+            "expenses": float(budget),
+            "profit": 0.0,
+            "mode": self.get_mode(),
+            "started_at": datetime.utcnow().isoformat(),
+            "completed_at": None,
+            "notes": notes,
+            "results": {},
+        }
+
+        self.memory.data["economy"]["experiments"].append(experiment)
+        self.update_opportunity_status(opp_id, "TESTING", f"Experiment #{exp_id} started")
+        self.memory.save()
+        self.memory.log("Economy", f"Started experiment #{exp_id} for opportunity #{opp_id} [{self.get_mode()}]")
+        return experiment
+
+    def complete_experiment(self, exp_id: int, revenue: float, extra_expenses: float = 0.0, notes: str = "") -> Optional[Dict]:
+        for exp in self.memory.data["economy"]["experiments"]:
+            if exp["id"] == exp_id:
+                exp["revenue"] = float(revenue)
+                exp["expenses"] += float(extra_expenses)
+                exp["profit"] = exp["revenue"] - exp["expenses"]
+                exp["status"] = "COMPLETED"
+                exp["completed_at"] = datetime.utcnow().isoformat()
+                if notes:
+                    exp["notes"] += " | " + notes
+
+                if exp["profit"] > 0:
+                    self.update_opportunity_status(exp["opportunity_id"], "VALIDATED", f"Experiment #{exp_id} profitable")
+                else:
+                    self.update_opportunity_status(exp["opportunity_id"], "REJECTED", f"Experiment #{exp_id} unprofitable")
+
+                self.memory.save()
+                self.memory.log("Economy", f"Completed experiment #{exp_id} | Profit: {exp['profit']}")
+                return exp
+        return None
+
+    def get_experiment(self, exp_id: int) -> Optional[Dict]:
+        for exp in self.memory.data["economy"]["experiments"]:
+            if exp["id"] == exp_id:
+                return exp
+        return None
+
+    def list_experiments(self, status: Optional[str] = None) -> List[Dict]:
+        exps = self.memory.data["economy"]["experiments"]
+        if status:
+            exps = [e for e in exps if e["status"] == status]
+        return exps
+
+    def get_economy_report(self) -> Dict[str, Any]:
+        opps = self.list_opportunities()
+        exps = self.list_experiments()
+
+        total_revenue = sum(e["revenue"] for e in exps)
+        total_expenses = sum(e["expenses"] for e in exps)
+        total_profit = total_revenue - total_expenses
+
+        return {
+            "mode": self.get_mode().upper(),
+            "opportunities_total": len(opps),
+            "opportunities_by_status": {
+                "DISCOVERED": len([o for o in opps if o["status"] == "DISCOVERED"]),
+                "ANALYSED": len([o for o in opps if o["status"] == "ANALYSED"]),
+                "TESTING": len([o for o in opps if o["status"] == "TESTING"]),
+                "VALIDATED": len([o for o in opps if o["status"] == "VALIDATED"]),
+                "REJECTED": len([o for o in opps if o["status"] == "REJECTED"]),
+            },
+            "experiments_total": len(exps),
+            "total_revenue": round(total_revenue, 2),
+            "total_expenses": round(total_expenses, 2),
+            "total_profit": round(total_profit, 2),
+            "active_experiments": len([e for e in exps if e["status"] == "RUNNING"]),
+        }
