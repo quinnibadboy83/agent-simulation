@@ -1,18 +1,18 @@
-
 """
-Base Tool System + Economic Tools (Module 2)
-Supports simulation and real modes.
+Base Tool System + Economic Tools + Web Research Tools
 """
 
 from typing import Dict, Any, Callable, Optional
 from .memory import SharedMemory
 from .economy import Economy
+from .research import WebResearch
 
 
 class ToolRegistry:
-    def __init__(self, memory: SharedMemory, economy: Economy = None):
+    def __init__(self, memory: SharedMemory, economy: Economy = None, research: WebResearch = None):
         self.memory = memory
         self.economy = economy
+        self.research = research
         self.tools: Dict[str, Dict[str, Any]] = {}
 
     def register(self, name: str, description: str, func: Callable, requires_approval: bool = False):
@@ -41,11 +41,10 @@ class ToolRegistry:
         if not tool:
             return {"success": False, "error": f"Tool '{name}' not found"}
 
-        # Safety gate for real mode
         if tool["requires_approval"] and self.economy and self.economy.is_real():
             return {
                 "success": False,
-                "error": f"Tool '{name}' requires approval in REAL mode. (Approval system coming next)"
+                "error": f"Tool '{name}' requires approval in REAL mode."
             }
 
         try:
@@ -57,8 +56,8 @@ class ToolRegistry:
             return {"success": False, "error": str(e)}
 
 
-def create_default_tools(memory: SharedMemory, world, economy: Economy = None) -> ToolRegistry:
-    registry = ToolRegistry(memory, economy)
+def create_default_tools(memory: SharedMemory, world, economy: Economy = None, research: WebResearch = None) -> ToolRegistry:
+    registry = ToolRegistry(memory, economy, research)
 
     # ---------- Original tools ----------
     def log_message(agent: str, message: str):
@@ -66,7 +65,7 @@ def create_default_tools(memory: SharedMemory, world, economy: Economy = None) -
         return f"Logged: {message}"
 
     def farm_info(topic: str, agent: str = "InfoFarmer"):
-        content = f"Gathered basic information about '{topic}'. (Real web tools coming later)"
+        content = f"Gathered basic information about '{topic}'."
         entry = memory.add_knowledge(source=agent, content=content, tags=[topic.lower(), "farmed"])
         world.add_resource("info_points", 5)
         memory.log(agent, f"Farmed info on: {topic}")
@@ -83,7 +82,7 @@ def create_default_tools(memory: SharedMemory, world, economy: Economy = None) -
     registry.register("check_balance", "Check current money balance", check_balance)
     registry.register("create_task", "Create a new task for an agent", create_task)
 
-    # ---------- New Economic Tools (Module 2) ----------
+    # ---------- Economic Tools ----------
     if economy:
         def money_mode(mode: str = None):
             if mode is None:
@@ -119,8 +118,16 @@ def create_default_tools(memory: SharedMemory, world, economy: Economy = None) -
         registry.register("find_opportunity", "Create a new opportunity", find_opportunity)
         registry.register("analyse_opportunity", "Analyse an opportunity by ID", analyse_opportunity)
         registry.register("list_opportunities", "List opportunities", list_opportunities)
-        registry.register("create_experiment", "Start a simulated/real experiment", create_experiment, requires_approval=True)
-        registry.register("complete_experiment", "Complete an experiment and calculate profit", complete_experiment, requires_approval=True)
+        registry.register("create_experiment", "Start an experiment", create_experiment, requires_approval=True)
+        registry.register("complete_experiment", "Complete an experiment", complete_experiment, requires_approval=True)
         registry.register("economy_report", "Full economy report", economy_report)
 
-    return registry
+    # ---------- Web Research Tools ----------
+    if research:
+        def web_search(query: str, max_results: int = 5):
+            return research.search(query, max_results)
+
+        def read_webpage(url: str):
+            return research.read_page(url)
+
+        registry.register("web_search", "
