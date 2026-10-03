@@ -29,7 +29,7 @@ class BossAgent(BaseAgent):
         if cmd.startswith("assign ") or cmd.startswith("task "):
             return self._handle_assign(command)
 
-        if cmd in ["balance", "money", "funds"]:
+        if cmd in ["balance", "funds"]:
             result = self.execute_tool("check_balance")
             balance = result.get("result", {}).get("balance", 0)
             return f"Current balance under Banker: ${balance:.2f}"
