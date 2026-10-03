@@ -1,5 +1,6 @@
 """
 Boss Agent - The Super Boss you control.
+Now supports Module 2 money commands (dual mode).
 """
 
 from typing import Dict, Any
@@ -23,6 +24,7 @@ class BossAgent(BaseAgent):
         cmd = command.strip().lower()
         self.memory.log("Boss", f"Received command: {command}")
 
+        # ---------- Original commands ----------
         if cmd in ["status", "report", "overview"]:
             return self.full_status_report()
 
@@ -48,7 +50,73 @@ class BossAgent(BaseAgent):
             self.memory.log("Boss", f"Announcement: {message}")
             return f"Announcement logged: {message}"
 
+        # ---------- New Module 2 Money commands ----------
+        if cmd.startswith("money") or cmd in ["scan", "opportunities"]:
+            return self._handle_money_command(command)
+
+        # Default fallback
         return self.think(command)
+
+    def _handle_money_command(self, command: str) -> str:
+        """Route money-related commands to the OpportunityAgent."""
+        # We get the OpportunityAgent through the shared agents dict in main,
+        # but for simplicity we call the tools directly or simulate the call.
+        # For now we use the tools and let OpportunityAgent logic live there.
+
+        cmd = command.lower().strip()
+
+        if cmd in ["money", "money help"]:
+            return self.get_money_help()
+
+        if "mode" in cmd:
+            if "simulation" in cmd:
+                result = self.execute_tool("money_mode", mode="simulation")
+                return result.get("result", str(result))
+            if "real" in cmd:
+                result = self.execute_tool("money_mode", mode="real")
+                return result.get("result", str(result))
+            result = self.execute_tool("money_mode")
+            return result.get("result", str(result))
+
+        if any(word in cmd for word in ["scan", "find", "discover"]):
+            # Trigger a simple scan via tool
+            # For a cleaner version we will improve this later
+            return (
+                "Sending scan order to OpportunityAgent...\n"
+                "(Full agent routing coming in next improvement)\n"
+                "Try these for now:\n"
+                "- money mode\n"
+                "- money report\n"
+                "- money opportunities"
+            )
+
+        if "report" in cmd:
+            result = self.execute_tool("economy_report")
+            if result.get("success"):
+                r = result["result"]
+                return (
+                    f"=== ECONOMY REPORT ({r['mode']}) ===\n"
+                    f"Opportunities: {r['opportunities_total']}\n"
+                    f"Total Revenue:  ${r['total_revenue']}\n"
+                    f"Total Expenses: ${r['total_expenses']}\n"
+                    f"Total Profit:   ${r['total_profit']}\n"
+                    f"Active Experiments: {r['active_experiments']}"
+                )
+            return str(result)
+
+        if "opportunities" in cmd or "list" in cmd:
+            result = self.execute_tool("list_opportunities")
+            if result.get("success"):
+                opps = result["result"]
+                if not opps:
+                    return "No opportunities yet."
+                msg = "Current Opportunities:\n"
+                for o in opps:
+                    msg += f"[{o['id']}] {o['name']} — {o['status']}\n"
+                return msg
+            return str(result)
+
+        return self.get_money_help()
 
     def full_status_report(self) -> str:
         agents = self.memory.get_all_agent_status()
@@ -105,10 +173,20 @@ class BossAgent(BaseAgent):
         return """
 === BOSS COMMANDS ===
 
-status / report     → Full overview
-balance / money     → Check funds
-farm <topic>        → Order InfoFarmer to research something
-assign <Agent> <task> → Create a task for an agent
-say <message>       → Make an announcement
-help                → Show this help
+status / report          → Full overview
+balance                  → Check funds
+farm <topic>             → Order InfoFarmer
+assign <Agent> <task>    → Create a task
+say <message>            → Announcement
+help                     → This help
+
+=== MONEY COMMANDS (Module 2) ===
+money mode               → Show current mode
+money mode simulation    → Switch to safe simulation
+money mode real          → Switch to real mode
+money report             → Economy summary
+money opportunities      → List opportunities
 """
+
+    def get_money_help(self) -> str:
+        return self.get_command_help()
