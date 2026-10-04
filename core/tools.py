@@ -36,15 +36,20 @@ class ToolRegistry:
             for t in self.tools.values()
         ]
 
-    def execute(self, name: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, name: str, approved: bool = False, **kwargs) -> Dict[str, Any]:
         tool = self.get_tool(name)
         if not tool:
             return {"success": False, "error": f"Tool '{name}' not found"}
 
-        if tool["requires_approval"] and self.economy and self.economy.is_real():
+        needs_ok = tool["requires_approval"]
+        real_mode = self.economy and self.economy.is_real()
+        if needs_ok and real_mode and not approved:
+            from .approvals import ApprovalGate
+            gate = ApprovalGate(self.memory)
+            item = gate.request(name, "Real-mode action needs approval", kwargs)
             return {
                 "success": False,
-                "error": f"Tool '{name}' requires approval in REAL mode."
+                "error": f"Needs your approval. Pending #{item['id']}. Type: approve {item['id']}",
             }
 
         try:
