@@ -148,4 +148,78 @@ class BossAgent(BaseAgent):
             if result.get("success"):
                 r = result["result"]
                 return (
-                    f"=== ECONOMY REPORT ({r['mode']}) ===\
+                    f"=== ECONOMY REPORT ({r['mode']}) ===\n"
+                    f"Opportunities: {r['opportunities_total']}\n"
+                    f"Total Revenue:  ${r['total_revenue']}\n"
+                    f"Total Expenses: ${r['total_expenses']}\n"
+                    f"Total Profit:   ${r['total_profit']}\n"
+                    f"Active Experiments: {r['active_experiments']}"
+                )
+            return str(result)
+
+        if "opportunities" in cmd or "list" in cmd:
+            result = self.execute_tool("list_opportunities")
+            if result.get("success"):
+                opps = result["result"]
+                if not opps:
+                    return "No opportunities yet."
+                msg = "Current Opportunities:\n"
+                for o in opps:
+                    msg += f"[{o['id']}] {o['name']} — {o['status']}\n"
+                return msg
+            return str(result)
+
+        return self.get_money_help()
+
+    def full_status_report(self) -> str:
+        agents = self.memory.get_all_agent_status()
+        pending = [t for t in self.memory.get_tasks() if t["status"] == "pending"]
+        balance = self.memory.get_balance("Banker")
+        knowledge_count = len(self.memory.data.get("knowledge", []))
+        report = "=== BOSS STATUS REPORT ===\n\n"
+        report += f"Bank Balance: ${balance:.2f}\n"
+        report += f"Knowledge entries: {knowledge_count}\n"
+        report += f"Pending tasks: {len(pending)}\n\nAgents:\n"
+        for name, info in agents.items():
+            report += f"  - {name} ({info.get('role')}) - {info.get('status')}\n"
+        return report
+
+    def order_info_farmer(self, topic: str) -> str:
+        task = self.memory.add_task(
+            title=f"Farm info: {topic}",
+            description=f"Gather useful information about: {topic}",
+            assigned_to="InfoFarmer",
+            created_by="Boss",
+        )
+        result = self.execute_tool("farm_info", topic=topic, agent="InfoFarmer")
+        self.memory.update_task(task["id"], "completed", notes="Auto-executed")
+        return f"Ordered InfoFarmer to research '{topic}'.\nResult: {result.get('result', result)}"
+
+    def _handle_assign(self, command: str) -> str:
+        parts = command.split()
+        if len(parts) < 3:
+            return "Usage: assign <AgentName> <task description>"
+        agent_name = parts[1]
+        task_desc = " ".join(parts[2:])
+        task = self.memory.add_task(
+            title=task_desc[:50],
+            description=task_desc,
+            assigned_to=agent_name,
+            created_by="Boss",
+        )
+        return f"Task created and assigned to {agent_name}:\n[{task['id']}] {task['title']}"
+
+    def get_command_help(self) -> str:
+        return """
+status                 -> System overview
+help                   -> This help
+search <query>         -> Search Wikipedia
+read <url>             -> Read a public page
+make post about <topic> -> Draft a caption, do not post it
+money mode             -> Show economy mode
+money report           -> Economy summary
+farm <topic>           -> InfoFarmer note
+"""
+
+    def get_money_help(self) -> str:
+        return self.get_command_help()
