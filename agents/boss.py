@@ -1,6 +1,6 @@
 """
 Boss Agent - Super Overseer
-Supports economy, web research, and content drafts.
+Supports economy, web research, content drafts, and Gemini replies.
 """
 
 from .base_agent import BaseAgent
@@ -75,6 +75,10 @@ class BossAgent(BaseAgent):
             return self._handle_money_command(command)
 
         return self.think(command)
+
+    def think(self, command: str) -> str:
+        from core.brain import ask_brain
+        return ask_brain(command)
 
     def make_post(self, topic: str) -> str:
         search = self.execute_tool("web_search", query=topic, max_results=3)
@@ -219,6 +223,7 @@ make post about <topic> -> Draft a caption, do not post it
 money mode             -> Show economy mode
 money report           -> Economy summary
 farm <topic>           -> InfoFarmer note
+Anything else          -> Gemini answers
 """
 
     def get_money_help(self) -> str:
