@@ -1,18 +1,37 @@
 """
-Shared Memory / Blackboard system.
-All agents read and write here.
+Shared Memory / Blackboard
+--------------------------
+
+Persistent shared state used by every agent.
+
+The memory system stores:
+
+    - world state
+    - agent status
+    - knowledge
+    - tasks
+    - transactions
+    - logs
+    - Creator approvals
 """
 
-from typing import Any, Dict, List, Optional
 from datetime import datetime
-import json
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+import json
 
 
 class SharedMemory:
-    def __init__(self, persist_path: str = "data/memory.json"):
+    def __init__(
+        self,
+        persist_path: str = "data/memory.json",
+    ):
         self.persist_path = Path(persist_path)
-        self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+
+        self.persist_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
         self.data: Dict[str, Any] = {
             "world_state": {},
@@ -26,47 +45,112 @@ class SharedMemory:
 
         self._load()
 
-        # Make sure newer data structures exist when loading an
-        # older memory.json created before they were introduced.
-        self.data.setdefault("world_state", {})
-        self.data.setdefault("agent_status", {})
-        self.data.setdefault("knowledge", [])
-        self.data.setdefault("tasks", [])
-        self.data.setdefault("transactions", [])
-        self.data.setdefault("logs", [])
-        self.data.setdefault("approvals", [])
+        self.data.setdefault(
+            "world_state",
+            {},
+        )
 
-    def _load(self):
-        if self.persist_path.exists():
-            try:
-                with open(self.persist_path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
+        self.data.setdefault(
+            "agent_status",
+            {},
+        )
 
-                if isinstance(loaded, dict):
-                    self.data = loaded
+        self.data.setdefault(
+            "knowledge",
+            [],
+        )
 
-            except Exception:
-                pass
+        self.data.setdefault(
+            "tasks",
+            [],
+        )
 
-    def save(self):
-        with open(self.persist_path, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, indent=2, default=str)
+        self.data.setdefault(
+            "transactions",
+            [],
+        )
+
+        self.data.setdefault(
+            "logs",
+            [],
+        )
+
+        self.data.setdefault(
+            "approvals",
+            [])
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def _load(self) -> None:
+        if not self.persist_path.exists():
+            return
+
+        try:
+            with open(
+                self.persist_path,
+                "r",
+                encoding="utf-8",
+            ) as file:
+                loaded = json.load(file)
+
+            if isinstance(
+                loaded,
+                dict,
+            ):
+                self.data = loaded
+
+        except Exception:
+            # A corrupted memory file should not prevent the application
+            # from starting.
+            self.data = {
+                "world_state": {},
+                "agent_status": {},
+                "knowledge": [],
+                "tasks": [],
+                "transactions": [],
+                "logs": [],
+                "approvals": [],
+            }
+
+    def save(self) -> None:
+        with open(
+            self.persist_path,
+            "w",
+            encoding="utf-8",
+        ) as file:
+            json.dump(
+                self.data,
+                file,
+                indent=2,
+                default=str,
+            )
+
+    # ------------------------------------------------------------------
+    # Knowledge
+    # ------------------------------------------------------------------
 
     def add_knowledge(
         self,
         source: str,
         content: str,
         tags: Optional[List[str]] = None,
-    ):
+    ) -> Dict[str, Any]:
         entry = {
-            "id": len(self.data["knowledge"]) + 1,
+            "id": len(
+                self.data["knowledge"]
+            ) + 1,
             "timestamp": datetime.utcnow().isoformat(),
             "source": source,
             "content": content,
             "tags": tags or [],
         }
 
-        self.data["knowledge"].append(entry)
+        self.data["knowledge"].append(
+            entry
+        )
+
         self.save()
 
         return entry
@@ -75,20 +159,29 @@ class SharedMemory:
         self,
         tags: Optional[List[str]] = None,
         limit: int = 20,
-    ) -> List[Dict]:
-        items = self.data["knowledge"]
+    ) -> List[Dict[str, Any]]:
+        items = self.data[
+            "knowledge"
+        ]
 
         if tags:
             items = [
-                k
-                for k in items
+                item
+                for item in items
                 if any(
-                    t in k.get("tags", [])
-                    for t in tags
+                    tag in item.get(
+                        "tags",
+                        [],
+                    )
+                    for tag in tags
                 )
             ]
 
         return items[-limit:]
+
+    # ------------------------------------------------------------------
+    # Tasks
+    # ------------------------------------------------------------------
 
     def add_task(
         self,
@@ -96,9 +189,11 @@ class SharedMemory:
         description: str,
         assigned_to: str,
         created_by: str = "Boss",
-    ):
+    ) -> Dict[str, Any]:
         task = {
-            "id": len(self.data["tasks"]) + 1,
+            "id": len(
+                self.data["tasks"]
+            ) + 1,
             "title": title,
             "description": description,
             "assigned_to": assigned_to,
@@ -108,7 +203,10 @@ class SharedMemory:
             "updated_at": datetime.utcnow().isoformat(),
         }
 
-        self.data["tasks"].append(task)
+        self.data["tasks"].append(
+            task
+        )
+
         self.save()
 
         return task
@@ -118,11 +216,15 @@ class SharedMemory:
         task_id: int,
         status: str,
         notes: str = "",
-    ):
-        for task in self.data["tasks"]:
+    ) -> Optional[Dict[str, Any]]:
+        for task in self.data[
+            "tasks"
+        ]:
             if task["id"] == task_id:
                 task["status"] = status
-                task["updated_at"] = datetime.utcnow().isoformat()
+                task["updated_at"] = (
+                    datetime.utcnow().isoformat()
+                )
 
                 if notes:
                     task["notes"] = notes
@@ -137,33 +239,47 @@ class SharedMemory:
         self,
         assigned_to: Optional[str] = None,
         status: Optional[str] = None,
-    ):
-        tasks = self.data["tasks"]
+    ) -> List[Dict[str, Any]]:
+        tasks = self.data[
+            "tasks"
+        ]
 
         if assigned_to:
             tasks = [
-                t
-                for t in tasks
-                if t["assigned_to"] == assigned_to
+                task
+                for task in tasks
+                if task.get(
+                    "assigned_to"
+                ) == assigned_to
             ]
 
         if status:
             tasks = [
-                t
-                for t in tasks
-                if t["status"] == status
+                task
+                for task in tasks
+                if task.get(
+                    "status"
+                ) == status
             ]
 
         return tasks
+
+    # ------------------------------------------------------------------
+    # Agent status
+    # ------------------------------------------------------------------
 
     def set_agent_status(
         self,
         agent_name: str,
         status: Dict[str, Any],
-    ):
-        self.data["agent_status"][agent_name] = {
+    ) -> None:
+        self.data[
+            "agent_status"
+        ][agent_name] = {
             **status,
-            "last_updated": datetime.utcnow().isoformat(),
+            "last_updated": (
+                datetime.utcnow().isoformat()
+            ),
         }
 
         self.save()
@@ -172,7 +288,9 @@ class SharedMemory:
         self,
         agent_name: str,
     ) -> Dict[str, Any]:
-        return self.data["agent_status"].get(
+        return self.data[
+            "agent_status"
+        ].get(
             agent_name,
             {},
         )
@@ -180,7 +298,13 @@ class SharedMemory:
     def get_all_agent_status(
         self,
     ) -> Dict[str, Any]:
-        return self.data["agent_status"]
+        return self.data[
+            "agent_status"
+        ]
+
+    # ------------------------------------------------------------------
+    # Transactions
+    # ------------------------------------------------------------------
 
     def add_transaction(
         self,
@@ -188,9 +312,11 @@ class SharedMemory:
         from_agent: str,
         to_agent: str,
         reason: str,
-    ):
-        tx = {
-            "id": len(self.data["transactions"]) + 1,
+    ) -> Dict[str, Any]:
+        transaction = {
+            "id": len(
+                self.data["transactions"]
+            ) + 1,
             "timestamp": datetime.utcnow().isoformat(),
             "amount": amount,
             "from": from_agent,
@@ -198,10 +324,15 @@ class SharedMemory:
             "reason": reason,
         }
 
-        self.data["transactions"].append(tx)
+        self.data[
+            "transactions"
+        ].append(
+            transaction
+        )
+
         self.save()
 
-        return tx
+        return transaction
 
     def get_balance(
         self,
@@ -209,21 +340,35 @@ class SharedMemory:
     ) -> float:
         balance = 0.0
 
-        for tx in self.data["transactions"]:
-            if tx["to"] == agent_name:
-                balance += tx["amount"]
+        for transaction in self.data[
+            "transactions"
+        ]:
+            if transaction[
+                "to"
+            ] == agent_name:
+                balance += transaction[
+                    "amount"
+                ]
 
-            if tx["from"] == agent_name:
-                balance -= tx["amount"]
+            if transaction[
+                "from"
+            ] == agent_name:
+                balance -= transaction[
+                    "amount"
+                ]
 
         return balance
+
+    # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
 
     def log(
         self,
         agent: str,
         message: str,
         level: str = "info",
-    ):
+    ) -> Dict[str, Any]:
         entry = {
             "timestamp": datetime.utcnow().isoformat(),
             "agent": agent,
@@ -231,8 +376,17 @@ class SharedMemory:
             "message": message,
         }
 
-        self.data["logs"].append(entry)
-        self.data["logs"] = self.data["logs"][-200:]
+        self.data[
+            "logs"
+        ].append(
+            entry
+        )
+
+        self.data[
+            "logs"
+        ] = self.data[
+            "logs"
+        ][-200:]
 
         self.save()
 
@@ -241,5 +395,7 @@ class SharedMemory:
     def get_logs(
         self,
         limit: int = 50,
-    ) -> List[Dict]:
-        return self.data["logs"][-limit:]
+    ) -> List[Dict[str, Any]]:
+        return self.data[
+            "logs"
+        ][-limit:]
