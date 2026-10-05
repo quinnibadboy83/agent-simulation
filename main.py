@@ -1,5 +1,5 @@
 """
-Agent Simulation - Module 1 + 2 + 3 (Web Research)
+Agent Simulation - terminal, economy, research, vault, dossiers
 """
 
 from fastapi import FastAPI, Request, Form
@@ -20,7 +20,7 @@ from agents.banker import BankerAgent
 from agents.info_farmer import InfoFarmerAgent
 from agents.opportunity_agent import OpportunityAgent
 
-app = FastAPI(title="Agent Simulation - Module 3")
+app = FastAPI(title="Agent Simulation")
 
 BASE_DIR = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=BASE_DIR / "ui" / "static"), name="static")
@@ -44,26 +44,45 @@ agents = {
     "OpportunityAgent": opportunity_agent,
 }
 
+SHEETS = {
+    "Boss": {
+        "role": "Overseer",
+        "voice": "Short orders. Checks the others.",
+        "trait": "Won't spend without approval",
+        "stats": {"Perception": 7, "Intelligence": 8, "Charisma": 6, "Endurance": 7, "Luck": 5},
+    },
+    "Banker": {
+        "role": "Ledger",
+        "voice": "Counts twice. Refuses vague spend.",
+        "trait": "Guards the balance",
+        "stats": {"Perception": 6, "Intelligence": 8, "Charisma": 3, "Endurance": 9, "Luck": 4},
+    },
+    "InfoFarmer": {
+        "role": "Research",
+        "voice": "Keeps clippings. Hates losing a source.",
+        "trait": "Hoards notes",
+        "stats": {"Perception": 9, "Intelligence": 8, "Charisma": 4, "Endurance": 6, "Luck": 5},
+    },
+    "OpportunityAgent": {
+        "role": "Scout",
+        "voice": "Looks for a small test, not a fantasy.",
+        "trait": "Scores before suggesting",
+        "stats": {"Perception": 8, "Intelligence": 7, "Charisma": 5, "Endurance": 6, "Luck": 6},
+    },
+}
+
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    world_summary = world.get_summary()
-    agent_status = memory.get_all_agent_status()
-    recent_logs = memory.get_logs(30)
-    balance = memory.get_balance("Banker")
-    knowledge_count = len(memory.data.get("knowledge", []))
-    pending_tasks = memory.get_tasks(status="pending")
-    economy_report = economy.get_economy_report()
-
     return templates.TemplateResponse("index.html", {
         "request": request,
-        "world": world_summary,
-        "agents": agent_status,
-        "logs": recent_logs,
-        "balance": balance,
-        "knowledge_count": knowledge_count,
-        "pending_tasks": pending_tasks,
-        "economy": economy_report,
+        "world": world.get_summary(),
+        "agents": memory.get_all_agent_status(),
+        "logs": memory.get_logs(30),
+        "balance": memory.get_balance("Banker"),
+        "knowledge_count": len(memory.data.get("knowledge", [])),
+        "pending_tasks": memory.get_tasks(status="pending"),
+        "economy": economy.get_economy_report(),
     })
 
 
@@ -71,9 +90,7 @@ async def home(request: Request):
 async def send_command(command: str = Form(...)):
     if not command.strip():
         return JSONResponse({"response": "Empty command."})
-
     response = boss.process_command(command)
-    
     return JSONResponse({
         "response": response,
         "balance": memory.get_balance("Banker"),
@@ -99,6 +116,57 @@ async def api_status():
 async def advance_time():
     world.advance_time()
     return {"message": "Time advanced", "world": world.get_summary()}
+
+
+@app.get("/vault", response_class=HTMLResponse)
+async def vault(request: Request):
+    rooms = {
+        "Boss office": ["Boss"],
+        "Bank": ["Banker"],
+        "Research floor": ["InfoFarmer"],
+        "Planning room": ["OpportunityAgent"],
+    }
+    return templates.TemplateResponse("vault.html", {"request": request, "rooms": rooms})
+
+
+@app.get("/agent/{name}", response_class=HTMLResponse)
+async def agent_page(request: Request, name: str, archived: int = 0):
+    if name not in SHEETS:
+        return HTMLResponse("No such agent", status_code=404)
+    status = memory.get_all_agent_status().get(name, {}).get("status", "unknown")
+    logs = []
+    for item in memory.get_logs(40):
+        if item.get("agent") == name:
+            logs.append(item.get("message", str(item)))
+    notes = []
+    if name == "InfoFarmer":
+        for i, item in enumerate(memory.data.get("knowledge", [])):
+            if "id" not in item:
+                item["id"] = i + 1
+            if bool(archived) == bool(item.get("archived", False)):
+                notes.append(item)
+    return templates.TemplateResponse("agent.html", {
+        "request": request,
+        "name": name,
+        "sheet": SHEETS[name],
+        "status": status,
+        "logs": logs[:10],
+        "notes": notes,
+    })
+
+
+@app.post("/agent/InfoFarmer/note")
+async def note_action(note_id: int = Form(...), action: str = Form(...)):
+    kept = []
+    for item in memory.data.get("knowledge", []):
+        if item.get("id") == note_id and action == "delete":
+            continue
+        if item.get("id") == note_id and action == "archive":
+            item["archived"] = True
+        kept.append(item)
+    memory.data["knowledge"] = kept
+    memory.save()
+    return HTMLResponse("<script>location='/agent/InfoFarmer'</script>")
 
 
 if __name__ == "__main__":
