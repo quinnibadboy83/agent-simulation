@@ -1,97 +1,55 @@
 """
-Tool Registry and Capability Control
+Tool Registry
+-------------
 
-The ToolRegistry is the security boundary between autonomous agents
-and executable capabilities.
+Central execution layer for all agent tools.
 
-Agents may reason, research, plan and propose actions autonomously.
+All agents must use this registry when executing tools.
 
-Every actual tool execution passes through this registry.
+The registry controls:
 
-Capability classes:
-
-INTERNAL
-    Local simulation/application functionality.
-
-RESEARCH
-    Public internet read/search functionality.
-    Research does not require Creator approval.
-
-LIVE
-    Tools capable of affecting external systems.
-
-PROTECTED
-    Consequential live actions requiring explicit Creator approval.
-
-Operating modes:
-
-SIMULATION
-    Simulation-safe tools may execute.
-    Non-simulation-safe tools are blocked.
-
-LIVE
-    Research/internal tools may execute autonomously.
-    Protected consequential tools require Creator approval.
-
-IMPORTANT:
-
-LIVE does NOT mean unrestricted.
-
-The Creator approval is tied to:
-    - specific tool
-    - specific agent
-    - specific parameters
-    - specific approval request
-
-An approval is consumed before execution and cannot be reused.
+    - tool registration
+    - tool discovery
+    - simulation/real mode
+    - Creator approval requirements
+    - approval consumption
+    - exact parameter matching
+    - execution logging
+    - error handling
 """
 
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-)
+from typing import Any, Callable, Dict, List, Optional
 
-from datetime import datetime
-
-from .memory import SharedMemory
-from .economy import Economy
-from .research import WebResearch
 from .approvals import ApprovalGate
+from .economy import Economy
+from .memory import SharedMemory
+from .research import WebResearch
 
 
 class ToolRegistry:
     """
-    Central capability registry and execution boundary.
-
-    The cognitive layer can inspect this registry and propose tool
-    usage, but it cannot bypass this class to execute tools.
+    Central registry and execution gateway for agent tools.
     """
+
+    VALID_MODES = {"simulation", "real"}
 
     def __init__(
         self,
         memory: SharedMemory,
-        economy: Economy = None,
-        research: WebResearch = None,
+        economy: Optional[Economy] = None,
+        research: Optional[WebResearch] = None,
     ):
         self.memory = memory
         self.economy = economy
         self.research = research
 
-        self.tools: Dict[
-            str,
-            Dict[str, Any],
-        ] = {}
+        self.tools: Dict[str, Dict[str, Any]] = {}
 
-        self.approvals = ApprovalGate(
-            self.memory
-        )
+        self.approvals = ApprovalGate(self.memory)
 
-    # ==================================================================
-    # TOOL REGISTRATION
-    # ==================================================================
+    # ------------------------------------------------------------------
+    # Registration
+    # ------------------------------------------------------------------
 
     def register(
         self,
@@ -101,93 +59,33 @@ class ToolRegistry:
         requires_approval: bool = False,
         live_capable: bool = False,
         simulation_safe: bool = True,
-        category: str = "general",
-        risk: str = "low",
-        autonomous: bool = True,
-        parameter_names: Optional[
-            List[str]
-        ] = None,
     ) -> None:
         """
-        Register a capability.
-
-        Parameters
-        ----------
-        name:
-            Unique tool identifier.
-
-        description:
-            Human/machine-readable explanation.
-
-        func:
-            Actual Python callable.
+        Register a tool.
 
         requires_approval:
-            Whether consequential LIVE execution requires Creator
-            approval.
+            The tool requires Creator approval when operating in REAL mode.
 
         live_capable:
-            Whether the tool can affect/interact with the external
-            world.
+            The tool can potentially affect or communicate with the
+            external/live world.
 
         simulation_safe:
-            Whether the tool may execute while in SIMULATION mode.
-
-        category:
-            Capability category.
-
-        risk:
-            Default risk classification.
-
-        autonomous:
-            Whether agents may call the tool without an external
-            human initiating the operation.
-
-        parameter_names:
-            Optional description of accepted parameters for future
-            structured reasoning/tool selection.
+            The tool is allowed to execute in SIMULATION mode.
         """
-
-        if not name:
-            raise ValueError(
-                "Tool name cannot be empty."
-            )
-
-        if not callable(func):
-            raise TypeError(
-                f"Tool '{name}' must provide a callable."
-            )
-
-        # A protected action must be live-capable.
-        if requires_approval:
-            live_capable = True
 
         self.tools[name] = {
             "name": name,
             "description": description,
             "func": func,
-            "requires_approval": bool(
-                requires_approval
-            ),
-            "live_capable": bool(
-                live_capable
-            ),
-            "simulation_safe": bool(
-                simulation_safe
-            ),
-            "category": category,
-            "risk": risk,
-            "autonomous": bool(
-                autonomous
-            ),
-            "parameter_names": (
-                parameter_names or []
-            ),
+            "requires_approval": requires_approval,
+            "live_capable": live_capable,
+            "simulation_safe": simulation_safe,
         }
 
-    # ==================================================================
-    # TOOL LOOKUP
-    # ==================================================================
+    # ------------------------------------------------------------------
+    # Discovery
+    # ------------------------------------------------------------------
 
     def get_tool(
         self,
@@ -195,76 +93,26 @@ class ToolRegistry:
     ) -> Optional[Dict[str, Any]]:
         return self.tools.get(name)
 
-    def list_tools(
-        self,
-    ) -> List[Dict[str, Any]]:
-        """
-        Return safe/public tool definitions.
+    def list_tools(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "name": tool["name"],
+                "description": tool["description"],
+                "requires_approval": tool["requires_approval"],
+                "live_capable": tool["live_capable"],
+                "simulation_safe": tool["simulation_safe"],
+            }
+            for tool in self.tools.values()
+        ]
 
-        The executable Python callable is deliberately omitted.
-        """
-
-        definitions = []
-
-        for tool in self.tools.values():
-            definitions.append(
-                {
-                    "name": tool["name"],
-                    "description": tool[
-                        "description"
-                    ],
-                    "requires_approval": tool[
-                        "requires_approval"
-                    ],
-                    "live_capable": tool[
-                        "live_capable"
-                    ],
-                    "simulation_safe": tool[
-                        "simulation_safe"
-                    ],
-                    "category": tool[
-                        "category"
-                    ],
-                    "risk": tool[
-                        "risk"
-                    ],
-                    "autonomous": tool[
-                        "autonomous"
-                    ],
-                    "parameter_names": tool[
-                        "parameter_names"
-                    ],
-                }
-            )
-
-        return definitions
-
-    def get_capabilities(
-        self,
-    ) -> List[Dict[str, Any]]:
-        """
-        Return the public capability map.
-
-        This is intended for:
-            - agent reasoning
-            - future LLM tool selection
-            - UI inspection
-            - diagnostics
-        """
-
+    def get_capabilities(self) -> List[Dict[str, Any]]:
         return self.list_tools()
 
-    # ==================================================================
-    # MODE / CAPABILITY POLICY
-    # ==================================================================
+    # ------------------------------------------------------------------
+    # Mode helpers
+    # ------------------------------------------------------------------
 
-    def get_current_mode(
-        self,
-    ) -> str:
-        """
-        Return the current operating mode.
-        """
-
+    def get_mode(self) -> str:
         if self.economy is None:
             return "simulation"
 
@@ -273,169 +121,124 @@ class ToolRegistry:
         except Exception:
             return "simulation"
 
-    def can_execute_in_current_mode(
-        self,
-        tool: Dict[str, Any],
-    ) -> bool:
-        """
-        Determine whether the tool is permitted by operating mode.
+    def is_real_mode(self) -> bool:
+        return self.get_mode() == "real"
 
-        This does NOT grant Creator approval.
+    def is_simulation_mode(self) -> bool:
+        return self.get_mode() == "simulation"
 
-        It only answers:
-
-            "Is this capability allowed to operate in this mode?"
-        """
-
-        mode = self.get_current_mode()
-
-        if mode == "simulation":
-            return bool(
-                tool.get(
-                    "simulation_safe",
-                    True,
-                )
-            )
-
-        if mode == "real":
-            return True
-
-        return False
-
-    # ==================================================================
-    # APPROVAL HELPERS
-    # ==================================================================
+    # ------------------------------------------------------------------
+    # Parameter helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def _normalise_parameters(
-        parameters: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """
-        Normalise action parameters for comparison/storage.
-
-        The approval system needs to know exactly what the Creator
-        approved.
-        """
-
-        if not parameters:
-            return {}
-
-        return dict(parameters)
-
     def _parameters_match(
-        self,
-        approved: Optional[Dict[str, Any]],
-        requested: Optional[Dict[str, Any]],
+        requested: Dict[str, Any],
+        approved: Dict[str, Any],
     ) -> bool:
         """
-        Verify that execution parameters exactly match the parameters
-        presented to the Creator.
+        Require exact parameter matching.
 
-        This prevents:
-
-            approved action A
-                  ↓
-            modified action B
-                  ↓
-            reuse of approval
+        An approval for one set of parameters cannot be reused for
+        another action.
         """
 
-        approved = self._normalise_parameters(
-            approved
-        )
+        return requested == approved
 
-        requested = self._normalise_parameters(
-            requested
-        )
-
-        return approved == requested
-
-    def _create_approval_request(
+    def _find_matching_approval(
         self,
-        name: str,
+        tool_name: str,
         agent: str,
         parameters: Dict[str, Any],
-        action_description: Optional[str],
-        plan: Optional[List[str]],
-        risk: str,
-    ) -> Dict[str, Any]:
-        """
-        Create a Creator approval request.
-        """
+    ) -> Optional[Dict[str, Any]]:
+        for item in self.approvals.get_pending():
+            if item.get("action") != tool_name:
+                continue
 
-        description = (
-            action_description
-            or (
-                f"Agent '{agent}' requested "
-                f"execution of tool '{name}'."
+            if item.get("agent") != agent:
+                continue
+
+            approved_parameters = item.get(
+                "parameters",
+                {},
             )
-        )
 
-        approval = self.approvals.request(
-            action=name,
-            description=description,
+            if self._parameters_match(
+                parameters,
+                approved_parameters,
+            ):
+                return item
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Approval requests
+    # ------------------------------------------------------------------
+
+    def request_approval(
+        self,
+        tool_name: str,
+        agent: str,
+        parameters: Dict[str, Any],
+        description: Optional[str] = None,
+        plan: Optional[List[str]] = None,
+        risk: str = "medium",
+    ) -> Dict[str, Any]:
+        tool = self.get_tool(tool_name)
+
+        if tool is None:
+            return {
+                "success": False,
+                "error": f"Tool '{tool_name}' not found.",
+            }
+
+        request = self.approvals.request(
+            action=tool_name,
+            description=(
+                description
+                or tool.get("description", "")
+            ),
             parameters=parameters,
             agent=agent,
             plan=plan or [],
             risk=risk,
         )
 
-        self.memory.log(
-            "ToolSystem",
-            (
-                f"Creator approval required: "
-                f"{name} by {agent} "
-                f"→ approval #{approval['id']}"
+        return {
+            "success": False,
+            "requires_approval": True,
+            "approval_id": request["id"],
+            "approval": request,
+            "message": (
+                f"Creator approval required for "
+                f"'{tool_name}'. "
+                f"Approval request #{request['id']} "
+                "has been created."
             ),
-        )
+        }
 
-        return approval
-
-    # ==================================================================
-    # TOOL EXECUTION
-    # ==================================================================
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
 
     def execute(
         self,
         name: str,
-        approval_id: Optional[int] = None,
         agent: str = "Unknown",
-        action_description: Optional[str] = None,
-        plan: Optional[List[str]] = None,
-        risk: Optional[str] = None,
-        **kwargs,
+        approval_id: Optional[int] = None,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """
-        Execute a registered capability.
+        Execute a registered tool.
 
-        Policy:
+        Protected tools in REAL mode require an approval belonging to:
+            - the same tool
+            - the same agent
+            - the exact same parameters
 
-        SIMULATION
-        ----------
-        simulation_safe=True:
-            Execute.
+        The approval is consumed BEFORE execution begins.
 
-        simulation_safe=False:
-            Block.
-
-        LIVE
-        ----
-        normal/internal/research tool:
-            Execute.
-
-        protected live tool:
-            No approval supplied:
-                Create pending Creator approval.
-
-            Approved approval:
-                Verify tool, agent and parameters.
-                Consume approval.
-                Execute once.
-
-            Any other state:
-                Block.
-
-        Approval is never reusable.
+        Therefore an approval cannot be reused.
         """
 
         tool = self.get_tool(name)
@@ -443,71 +246,25 @@ class ToolRegistry:
         if tool is None:
             return {
                 "success": False,
-                "blocked": True,
-                "error": (
-                    f"Tool '{name}' not found."
-                ),
+                "error": f"Tool '{name}' not found.",
             }
 
-        mode = self.get_current_mode()
-
-        simulation_mode = (
-            mode == "simulation"
-        )
-
-        live_mode = (
-            mode == "real"
-        )
-
-        parameters = (
-            self._normalise_parameters(
-                kwargs
-            )
-        )
-
-        effective_risk = (
-            risk
-            or tool.get(
-                "risk",
-                "low",
-            )
-        )
-
-        simulation_safe = bool(
-            tool.get(
-                "simulation_safe",
-                True,
-            )
-        )
-
-        live_capable = bool(
-            tool.get(
-                "live_capable",
-                False,
-            )
-        )
-
-        requires_approval = bool(
-            tool.get(
-                "requires_approval",
-                False,
-            )
-        )
+        simulation = self.is_simulation_mode()
+        real = self.is_real_mode()
 
         # --------------------------------------------------------------
-        # VALID OPERATING MODE
+        # Simulation safety
         # --------------------------------------------------------------
 
-        if mode not in {
-            "simulation",
-            "real",
-        }:
-
+        if simulation and not tool.get(
+            "simulation_safe",
+            True,
+        ):
             self.memory.log(
                 "ToolSystem",
                 (
-                    f"Blocked {name}: "
-                    "invalid operating mode."
+                    f"Blocked tool '{name}' because it is "
+                    "not permitted in simulation mode."
                 ),
                 level="warning",
             )
@@ -515,445 +272,187 @@ class ToolRegistry:
             return {
                 "success": False,
                 "blocked": True,
-                "reason": "invalid_mode",
                 "error": (
-                    "No valid operating mode is active."
+                    f"Tool '{name}' is not permitted "
+                    "in simulation mode."
                 ),
             }
 
         # --------------------------------------------------------------
-        # SIMULATION MODE
+        # Real-mode approval
         # --------------------------------------------------------------
 
-        if simulation_mode:
+        if (
+            real
+            and tool.get("requires_approval", False)
+        ):
+            approval = None
 
-            if not simulation_safe:
-
-                self.memory.log(
-                    "ToolSystem",
-                    (
-                        f"BLOCKED simulation execution: "
-                        f"{name} requested by {agent}"
-                    ),
-                    level="warning",
+            # Explicit approval ID supplied by caller.
+            if approval_id is not None:
+                approval = self.approvals.get(
+                    approval_id
                 )
 
+                if approval is None:
+                    return {
+                        "success": False,
+                        "blocked": True,
+                        "error": (
+                            f"Approval #{approval_id} "
+                            "does not exist."
+                        ),
+                    }
+
+                if approval.get("status") != "approved":
+                    return {
+                        "success": False,
+                        "blocked": True,
+                        "requires_approval": True,
+                        "error": (
+                            f"Approval #{approval_id} "
+                            "is not approved."
+                        ),
+                    }
+
+                if approval.get("action") != name:
+                    return {
+                        "success": False,
+                        "blocked": True,
+                        "error": (
+                            "Approval does not match "
+                            f"tool '{name}'."
+                        ),
+                    }
+
+                if approval.get("agent") != agent:
+                    return {
+                        "success": False,
+                        "blocked": True,
+                        "error": (
+                            "Approval does not belong "
+                            f"to agent '{agent}'."
+                        ),
+                    }
+
+                if not self._parameters_match(
+                    kwargs,
+                    approval.get("parameters", {}),
+                ):
+                    return {
+                        "success": False,
+                        "blocked": True,
+                        "error": (
+                            "Approval parameters do not "
+                            "match the requested action."
+                        ),
+                    }
+
+            # No explicit approval supplied.
+            else:
+                approval = (
+                    self._find_matching_approval(
+                        tool_name=name,
+                        agent=agent,
+                        parameters=kwargs,
+                    )
+                )
+
+                if approval is None:
+                    return self.request_approval(
+                        tool_name=name,
+                        agent=agent,
+                        parameters=kwargs,
+                        description=(
+                            f"REAL mode action '{name}' "
+                            "requires Creator approval."
+                        ),
+                        risk="high",
+                    )
+
+            # ----------------------------------------------------------
+            # Consume approval BEFORE execution.
+            # ----------------------------------------------------------
+
+            consumed = self.approvals.consume_approval(
+                int(approval["id"])
+            )
+
+            if not consumed:
                 return {
                     "success": False,
                     "blocked": True,
-                    "reason": "simulation_mode",
                     "error": (
-                        f"Tool '{name}' is not permitted "
-                        "in SIMULATION mode."
+                        "Approval could not be consumed. "
+                        "Execution blocked."
                     ),
                 }
 
-            self.memory.log(
-                "ToolSystem",
-                (
-                    f"Simulation execution: "
-                    f"{name} by {agent}"
-                ),
-            )
-
         # --------------------------------------------------------------
-        # LIVE MODE
+        # Execute tool
         # --------------------------------------------------------------
 
-        if live_mode:
-
-            # ----------------------------------------------------------
-            # Non-live-capable tools
-            # ----------------------------------------------------------
-
-            if not live_capable:
-
-                self.memory.log(
-                    "ToolSystem",
-                    (
-                        f"Live execution of autonomous "
-                        f"non-live tool: {name} "
-                        f"by {agent}"
-                    ),
-                )
-
-            # ----------------------------------------------------------
-            # LIVE-CAPABLE TOOL
-            # ----------------------------------------------------------
-
-            if live_capable:
-
-                # ------------------------------------------------------
-                # UNPROTECTED LIVE CAPABILITY
-                # ------------------------------------------------------
-
-                if not requires_approval:
-
-                    self.memory.log(
-                        "ToolSystem",
-                        (
-                            f"Live-capable autonomous tool: "
-                            f"{name} by {agent}"
-                        ),
-                    )
-
-                # ------------------------------------------------------
-                # CREATOR-PROTECTED ACTION
-                # ------------------------------------------------------
-
-                else:
-
-                    # ==================================================
-                    # CREATE APPROVAL
-                    # ==================================================
-
-                    if approval_id is None:
-
-                        approval = (
-                            self._create_approval_request(
-                                name=name,
-                                agent=agent,
-                                parameters=parameters,
-                                action_description=(
-                                    action_description
-                                ),
-                                plan=plan,
-                                risk=effective_risk,
-                            )
-                        )
-
-                        return {
-                            "success": False,
-                            "requires_approval": True,
-                            "approval_id": (
-                                approval["id"]
-                            ),
-                            "status": "pending",
-                            "message": (
-                                f"Creator approval required "
-                                f"for '{name}'. "
-                                f"Pending approval "
-                                f"#{approval['id']}."
-                            ),
-                            "approval": approval,
-                        }
-
-                    # ==================================================
-                    # LOOK UP APPROVAL
-                    # ==================================================
-
-                    approval = (
-                        self.approvals.get(
-                            approval_id
-                        )
-                    )
-
-                    if approval is None:
-
-                        self.memory.log(
-                            "ToolSystem",
-                            (
-                                f"Rejected invalid "
-                                f"approval #{approval_id} "
-                                f"for {name}"
-                            ),
-                            level="warning",
-                        )
-
-                        return {
-                            "success": False,
-                            "requires_approval": True,
-                            "error": (
-                                f"Approval #{approval_id} "
-                                "does not exist."
-                            ),
-                        }
-
-                    # ==================================================
-                    # TOOL MATCH
-                    # ==================================================
-
-                    if approval.get(
-                        "action"
-                    ) != name:
-
-                        self.memory.log(
-                            "ToolSystem",
-                            (
-                                f"Rejected approval "
-                                f"#{approval_id}: "
-                                "tool mismatch"
-                            ),
-                            level="warning",
-                        )
-
-                        return {
-                            "success": False,
-                            "requires_approval": True,
-                            "error": (
-                                f"Approval #{approval_id} "
-                                f"is for "
-                                f"'{approval.get('action')}', "
-                                f"not '{name}'."
-                            ),
-                        }
-
-                    # ==================================================
-                    # AGENT MATCH
-                    # ==================================================
-
-                    approved_agent = (
-                        approval.get(
-                            "agent"
-                        )
-                    )
-
-                    if (
-                        approved_agent
-                        and approved_agent != agent
-                    ):
-
-                        self.memory.log(
-                            "ToolSystem",
-                            (
-                                f"Rejected approval "
-                                f"#{approval_id}: "
-                                f"agent mismatch "
-                                f"({agent} != "
-                                f"{approved_agent})"
-                            ),
-                            level="warning",
-                        )
-
-                        return {
-                            "success": False,
-                            "requires_approval": True,
-                            "error": (
-                                f"Approval #{approval_id} "
-                                f"belongs to agent "
-                                f"'{approved_agent}', "
-                                f"not '{agent}'."
-                            ),
-                        }
-
-                    # ==================================================
-                    # PARAMETER MATCH
-                    # ==================================================
-
-                    approved_parameters = (
-                        approval.get(
-                            "parameters",
-                            {},
-                        )
-                    )
-
-                    if not self._parameters_match(
-                        approved_parameters,
-                        parameters,
-                    ):
-
-                        self.memory.log(
-                            "ToolSystem",
-                            (
-                                f"Rejected approval "
-                                f"#{approval_id}: "
-                                "parameter mismatch"
-                            ),
-                            level="warning",
-                        )
-
-                        return {
-                            "success": False,
-                            "requires_approval": True,
-                            "error": (
-                                f"Approval #{approval_id} "
-                                "does not match the "
-                                "requested action parameters."
-                            ),
-                            "approved_parameters": (
-                                approved_parameters
-                            ),
-                            "requested_parameters": (
-                                parameters
-                            ),
-                        }
-
-                    # ==================================================
-                    # RISK MATCH
-                    # ==================================================
-
-                    approved_risk = (
-                        approval.get(
-                            "risk",
-                            "medium",
-                        )
-                    )
-
-                    if (
-                        approved_risk
-                        != effective_risk
-                    ):
-
-                        self.memory.log(
-                            "ToolSystem",
-                            (
-                                f"Rejected approval "
-                                f"#{approval_id}: "
-                                "risk mismatch"
-                            ),
-                            level="warning",
-                        )
-
-                        return {
-                            "success": False,
-                            "requires_approval": True,
-                            "error": (
-                                f"Approval #{approval_id} "
-                                "does not match the "
-                                "requested risk level."
-                            ),
-                        }
-
-                    # ==================================================
-                    # APPROVAL STATUS
-                    # ==================================================
-
-                    if approval.get(
-                        "status"
-                    ) != "approved":
-
-                        return {
-                            "success": False,
-                            "requires_approval": True,
-                            "approval_id": approval_id,
-                            "status": approval.get(
-                                "status"
-                            ),
-                            "error": (
-                                f"Approval #{approval_id} "
-                                "is not approved."
-                            ),
-                        }
-
-                    # ==================================================
-                    # CONSUME APPROVAL
-                    # ==================================================
-
-                    consumed = (
-                        self.approvals.consume_approval(
-                            approval_id
-                        )
-                    )
-
-                    if not consumed:
-
-                        return {
-                            "success": False,
-                            "requires_approval": True,
-                            "approval_id": approval_id,
-                            "error": (
-                                f"Approval #{approval_id} "
-                                "could not be consumed."
-                            ),
-                        }
-
-                    self.memory.log(
-                        "ToolSystem",
-                        (
-                            f"Consumed Creator approval "
-                            f"#{approval_id} for {name}"
-                        ),
-                    )
-
-        # --------------------------------------------------------------
-        # EXECUTE
-        # --------------------------------------------------------------
-
-        execution_started = False
+        self.memory.log(
+            "ToolSystem",
+            (
+                f"Executing tool '{name}' "
+                f"for agent '{agent}' "
+                f"in {self.get_mode().upper()} mode."
+            ),
+        )
 
         try:
-
-            execution_started = True
-
             result = tool["func"](
-                **parameters
+                **kwargs
             )
 
             self.memory.log(
                 "ToolSystem",
                 (
-                    f"Executed tool '{name}' "
-                    f"by {agent} "
-                    f"[{mode.upper()}]"
+                    f"Tool '{name}' completed successfully "
+                    f"for '{agent}'."
                 ),
             )
 
             return {
                 "success": True,
-                "result": result,
                 "tool": name,
                 "agent": agent,
-                "mode": mode,
-                "live_capable": live_capable,
-                "requires_approval": (
-                    requires_approval
-                ),
-                "executed_at": (
-                    datetime.utcnow().isoformat()
-                ),
+                "mode": self.get_mode(),
+                "result": result,
             }
 
         except Exception as exc:
-
-            error_message = str(exc)
-
             self.memory.log(
                 "ToolSystem",
                 (
-                    f"Tool '{name}' failed: "
-                    f"{error_message}"
+                    f"Tool '{name}' failed for "
+                    f"'{agent}': {exc}"
                 ),
                 level="error",
             )
 
-            # An approved protected action has already consumed its
-            # approval. Record that the execution attempt failed.
-            if (
-                execution_started
-                and requires_approval
-                and live_mode
-                and approval_id is not None
-            ):
-
-                self.approvals.reject_execution(
-                    approval_id
-                )
-
             return {
                 "success": False,
-                "error": error_message,
                 "tool": name,
                 "agent": agent,
-                "mode": mode,
+                "mode": self.get_mode(),
+                "error": str(exc),
             }
 
 
-# ==================================================================
+# ======================================================================
 # DEFAULT TOOLS
-# ==================================================================
+# ======================================================================
 
 def create_default_tools(
     memory: SharedMemory,
     world,
-    economy: Economy = None,
-    research: WebResearch = None,
+    economy: Optional[Economy] = None,
+    research: Optional[WebResearch] = None,
 ) -> ToolRegistry:
     """
-    Construct the default ToolRegistry.
-
-    Existing project functionality is preserved.
-
-    New external capabilities can be registered here later.
+    Create the default ToolRegistry used by the application.
     """
 
     registry = ToolRegistry(
@@ -962,9 +461,9 @@ def create_default_tools(
         research=research,
     )
 
-    # ================================================================
-    # INTERNAL / COORDINATION TOOLS
-    # ================================================================
+    # ------------------------------------------------------------------
+    # Basic internal tools
+    # ------------------------------------------------------------------
 
     def log_message(
         agent: str,
@@ -975,17 +474,15 @@ def create_default_tools(
             message,
         )
 
-        return (
-            f"Logged: {message}"
-        )
+        return f"Logged: {message}"
 
     def farm_info(
         topic: str,
         agent: str = "InfoFarmer",
     ):
         content = (
-            f"Gathered basic information "
-            f"about '{topic}'."
+            f"Gathered basic information about "
+            f"'{topic}'."
         )
 
         entry = memory.add_knowledge(
@@ -997,10 +494,11 @@ def create_default_tools(
             ],
         )
 
-        world.add_resource(
-            "info_points",
-            5,
-        )
+        if world is not None:
+            world.add_resource(
+                "info_points",
+                5,
+            )
 
         memory.log(
             agent,
@@ -1022,120 +520,54 @@ def create_default_tools(
         assigned_to: str,
     ):
         return memory.add_task(
-            title,
-            description,
-            assigned_to,
+            title=title,
+            description=description,
+            assigned_to=assigned_to,
+            created_by="Boss",
         )
 
     registry.register(
         name="log",
-        description="Write a system log message",
+        description="Write a log message.",
         func=log_message,
-        simulation_safe=True,
-        category="internal",
-        risk="low",
-        autonomous=True,
-        parameter_names=[
-            "agent",
-            "message",
-        ],
     )
 
     registry.register(
         name="farm_info",
-        description="Research and store information on a topic",
+        description="Farm information on a topic.",
         func=farm_info,
-        simulation_safe=True,
-        category="research",
-        risk="low",
-        autonomous=True,
-        parameter_names=[
-            "topic",
-            "agent",
-        ],
     )
 
     registry.register(
         name="check_balance",
-        description="Read the current Banker balance",
+        description="Check the current Banker balance.",
         func=check_balance,
-        simulation_safe=True,
-        category="finance",
-        risk="low",
-        autonomous=True,
-        parameter_names=[],
     )
 
     registry.register(
         name="create_task",
-        description="Create a task for another agent",
+        description="Create a new task for an agent.",
         func=create_task,
-        simulation_safe=True,
-        category="coordination",
-        risk="low",
-        autonomous=True,
-        parameter_names=[
-            "title",
-            "description",
-            "assigned_to",
-        ],
     )
 
-    # ================================================================
-    # ECONOMY
-    # ================================================================
+    # ------------------------------------------------------------------
+    # Economy tools
+    # ------------------------------------------------------------------
 
-    if economy:
+    if economy is not None:
 
         def money_mode(
-            mode: str = None,
+            mode: Optional[str] = None,
         ):
-            """
-            Read economy mode.
-
-            Agent processes cannot change operating mode.
-
-            The Creator control/API layer owns this decision.
-            """
-
-            if mode is not None:
-
-                memory.log(
-                    "ToolSystem",
-                    (
-                        "Blocked agent attempt to "
-                        f"change operating mode "
-                        f"to '{mode}'."
-                    ),
-                    level="warning",
+            if mode is None:
+                return (
+                    f"Current economy mode: "
+                    f"{economy.get_mode().upper()}"
                 )
 
-                return {
-                    "success": False,
-                    "blocked": True,
-                    "reason": "creator_controlled",
-                    "error": (
-                        "Operating mode is "
-                        "Creator-controlled. "
-                        "Use the Creator control "
-                        "panel/API."
-                    ),
-                    "current_mode": (
-                        economy.get_mode()
-                    ),
-                }
-
-            return {
-                "mode": economy.get_mode(),
-                "policy": (
-                    economy.get_mode_policy()
-                    if hasattr(
-                        economy,
-                        "get_mode_policy",
-                    )
-                    else {}
-                ),
-            }
+            return economy.set_mode(
+                mode
+            )
 
         def find_opportunity(
             name: str,
@@ -1162,7 +594,7 @@ def create_default_tools(
             )
 
         def list_opportunities(
-            status: str = None,
+            status: Optional[str] = None,
         ):
             return economy.list_opportunities(
                 status
@@ -1197,134 +629,63 @@ def create_default_tools(
 
         registry.register(
             name="money_mode",
-            description=(
-                "Read the current economy operating mode "
-                "and policy"
-            ),
+            description="Get or set economy mode.",
             func=money_mode,
-            simulation_safe=True,
-            category="system",
-            risk="low",
-            autonomous=True,
-            parameter_names=[
-                "mode",
-            ],
         )
 
         registry.register(
             name="find_opportunity",
-            description=(
-                "Create a simulated or recorded "
-                "business opportunity"
-            ),
+            description="Create a new economic opportunity.",
             func=find_opportunity,
-            simulation_safe=True,
-            category="economy",
-            risk="low",
-            autonomous=True,
-            parameter_names=[
-                "name",
-                "description",
-                "startup_cost",
-                "expected_expenses",
-                "expected_revenue",
-                "risk",
-            ],
         )
 
         registry.register(
             name="analyse_opportunity",
-            description="Analyse an economic opportunity",
+            description="Analyse an economic opportunity.",
             func=analyse_opportunity,
-            simulation_safe=True,
-            category="analysis",
-            risk="low",
-            autonomous=True,
-            parameter_names=[
-                "opp_id",
-            ],
         )
 
         registry.register(
             name="list_opportunities",
-            description="List known economic opportunities",
+            description="List available economic opportunities.",
             func=list_opportunities,
-            simulation_safe=True,
-            category="economy",
-            risk="low",
-            autonomous=True,
-            parameter_names=[
-                "status",
-            ],
         )
-
-        # ------------------------------------------------------------
-        # Protected financial operation.
-        #
-        # Simulation:
-        #     allowed without approval.
-        #
-        # LIVE:
-        #     Creator approval required.
-        # ------------------------------------------------------------
 
         registry.register(
             name="create_experiment",
             description=(
-                "Start an economic experiment that may "
-                "consume a financial budget"
+                "Start an economic experiment. "
+                "REAL mode requires Creator approval."
             ),
             func=create_experiment,
             requires_approval=True,
             live_capable=True,
             simulation_safe=True,
-            category="financial",
-            risk="medium",
-            autonomous=True,
-            parameter_names=[
-                "opp_id",
-                "budget",
-                "notes",
-            ],
         )
 
         registry.register(
             name="complete_experiment",
             description=(
-                "Complete an economic experiment and "
-                "record revenue and expenses"
+                "Complete an economic experiment. "
+                "REAL mode requires Creator approval."
             ),
             func=complete_experiment,
             requires_approval=True,
             live_capable=True,
             simulation_safe=True,
-            category="financial",
-            risk="medium",
-            autonomous=True,
-            parameter_names=[
-                "exp_id",
-                "revenue",
-                "extra_expenses",
-                "notes",
-            ],
         )
 
         registry.register(
             name="economy_report",
-            description="Read the complete economy report",
+            description="Generate the full economy report.",
             func=economy_report,
-            simulation_safe=True,
-            category="economy",
-            risk="low",
-            autonomous=True,
-            parameter_names=[],
         )
 
-    # ================================================================
-    # PUBLIC INTERNET RESEARCH
-    # ================================================================
+    # ------------------------------------------------------------------
+    # Web research tools
+    # ------------------------------------------------------------------
 
-    if research:
+    if research is not None:
 
         def web_search(
             query: str,
@@ -1342,57 +703,20 @@ def create_default_tools(
                 url
             )
 
-        # ------------------------------------------------------------
-        # PUBLIC RESEARCH IS AUTONOMOUS.
-        #
-        # These capabilities:
-        #
-        #   search
-        #   read
-        #   investigate
-        #   compare
-        #   gather evidence
-        #
-        # do not themselves create external side effects.
-        #
-        # They therefore do not require Creator approval.
-        # ------------------------------------------------------------
-
         registry.register(
             name="web_search",
-            description=(
-                "Search the public internet for "
-                "information and research"
-            ),
+            description="Search the public web for information.",
             func=web_search,
-            requires_approval=False,
             live_capable=False,
             simulation_safe=True,
-            category="research",
-            risk="low",
-            autonomous=True,
-            parameter_names=[
-                "query",
-                "max_results",
-            ],
         )
 
         registry.register(
             name="read_webpage",
-            description=(
-                "Read publicly accessible webpage "
-                "content"
-            ),
+            description="Read a public webpage.",
             func=read_webpage,
-            requires_approval=False,
             live_capable=False,
             simulation_safe=True,
-            category="research",
-            risk="low",
-            autonomous=True,
-            parameter_names=[
-                "url",
-            ],
         )
 
     return registry
