@@ -3,115 +3,1167 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
     <title>Agent Simulation // Module 1</title>
+
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="manifest" href="/static/manifest.json">
+
     <meta name="theme-color" content="#0a0f0a">
     <meta name="apple-mobile-web-app-capable" content="yes">
 </head>
+
 <body>
-    <div class="pip-container">
-        <header class="pip-header">
-            <div class="logo">◈ AGENT SIM</div>
-            <div class="status-bar">
-                <a href="/vault">VAULT</a>
-                <span>DAY <span id="day">{{ world.day }}</span></span>
-                <span id="time">{{ world.time }}</span>
-                <span class="money">$<span id="balance">{{ "%.2f"|format(balance) }}</span></span>
+
+<div class="pip-container">
+
+    <!-- ============================================================
+         HEADER
+         ============================================================ -->
+
+    <header class="pip-header">
+
+        <div class="logo">
+            ◈ AGENT SIM
+        </div>
+
+        <div class="status-bar">
+
+            <a href="/vault">
+                VAULT
+            </a>
+
+            <span>
+                DAY <span id="day">{{ world.day }}</span>
+            </span>
+
+            <span id="time">
+                {{ world.time }}
+            </span>
+
+            <span class="money">
+                $<span id="balance">
+                    {{ "%.2f"|format(balance) }}
+                </span>
+            </span>
+
+        </div>
+
+    </header>
+
+
+    <!-- ============================================================
+         OPERATING MODE / SAFETY BAR
+         ============================================================ -->
+
+    <section class="panel" id="creator-control-panel">
+
+        <div class="panel-title">
+            CREATOR CONTROL
+        </div>
+
+        <div id="safety-status">
+
+            {% if safety.live %}
+
+            <div class="safety-live">
+                <strong>⚠ LIVE MODE</strong>
+                <span>
+                    Live-capable tools are available.
+                    Protected actions still require Creator approval.
+                </span>
             </div>
-        </header>
 
-        <nav class="tabs">
-            <button class="tab active" data-tab="command">COMMAND</button>
-            <button class="tab" data-tab="agents">AGENTS</button>
-            <button class="tab" data-tab="intel">INTEL</button>
-            <button class="tab" data-tab="logs">LOGS</button>
-        </nav>
+            {% else %}
 
-        <main class="content">
-            <section id="command" class="tab-content active">
-                <div class="panel">
-                    <div class="panel-title">BOSS TERMINAL</div>
-                    <div id="response-area" class="response-box">
-                        Type orders below. Try: <strong>status</strong> or <strong>help</strong>
-                    </div>
-                    <form id="command-form" class="command-form">
-                        <input type="text" id="command-input" placeholder="Enter order for Boss..." autocomplete="off" enterkeyhint="send">
-                        <button type="submit">EXECUTE</button>
-                    </form>
-                    <div class="quick-actions">
-                        <button onclick="sendQuick('status')">STATUS</button>
-                        <button onclick="sendQuick('balance')">BALANCE</button>
-                        <button onclick="sendQuick('farm opportunities')">FARM INFO</button>
-                        <button onclick="sendQuick('help')">HELP</button>
-                    </div>
-                </div>
-            </section>
+            <div class="safety-simulation">
+                <strong>● SIMULATION MODE</strong>
+                <span>
+                    Agents are operating inside the simulation.
+                </span>
+            </div>
 
-            <section id="agents" class="tab-content">
-                <div class="panel">
-                    <div class="panel-title">ACTIVE AGENTS</div>
-                    <div id="agents-list">
-                        {% for name, info in agents.items() %}
-                        <a class="agent-card" href="/agent/{{ name }}">
-                            <div class="agent-name">{{ name }}</div>
-                            <div class="agent-role">{{ info.role }}</div>
-                            <div class="agent-status">{{ info.status }}</div>
-                        </a>
-                        {% endfor %}
-                    </div>
-                </div>
-            </section>
+            {% endif %}
 
-            <section id="intel" class="tab-content">
-                <div class="panel">
-                    <div class="panel-title">KNOWLEDGE VAULT</div>
-                    <div class="stat-row">
-                        <span>Info Points:</span>
-                        <span id="info-points">{{ world.resources.info_points }}</span>
-                    </div>
-                    <div class="stat-row">
-                        <span>Knowledge Entries:</span>
-                        <span id="knowledge-count">{{ knowledge_count }}</span>
-                    </div>
-                    <div class="panel-title" style="margin-top:1rem;">PENDING TASKS</div>
-                    <div id="tasks-list">
-                        {% if pending_tasks %}
-                            {% for task in pending_tasks %}
-                            <div class="task-item">
-                                <strong>#{{ task.id }}</strong> {{ task.title }}
-                                <div class="task-meta">→ {{ task.assigned_to }}</div>
-                            </div>
-                            {% endfor %}
-                        {% else %}
-                            <div class="empty">No pending tasks</div>
-                        {% endif %}
-                    </div>
-                </div>
-            </section>
+        </div>
 
-            <section id="logs" class="tab-content">
-                <div class="panel">
-                    <div class="panel-title">SYSTEM LOGS</div>
-                    <div id="logs-list" class="logs-box">
-                        {% for log in logs|reverse %}
-                        <div class="log-entry">
-                            <span class="log-time">{{ log.timestamp[11:16] }}</span>
-                            <span class="log-agent">[{{ log.agent }}]</span>
-                            <span class="log-msg">{{ log.message }}</span>
+
+        <div class="mode-controls">
+
+            <button
+                type="button"
+                id="simulation-mode"
+                class="mode-button"
+                onclick="setOperatingMode('simulation')"
+            >
+                SIMULATION
+            </button>
+
+            <button
+                type="button"
+                id="live-mode"
+                class="mode-button"
+                onclick="setOperatingMode('live')"
+            >
+                LIVE
+            </button>
+
+        </div>
+
+        <div class="creator-warning">
+
+            <strong>CREATOR SAFETY</strong>
+
+            <div>
+                Switching to LIVE does not automatically approve
+                agent actions.
+            </div>
+
+            <div>
+                Protected real-world actions require an individual
+                Creator approval.
+            </div>
+
+        </div>
+
+    </section>
+
+
+    <!-- ============================================================
+         CREATOR APPROVAL QUEUE
+         ============================================================ -->
+
+    <section class="panel" id="approval-panel">
+
+        <div class="panel-title">
+
+            CREATOR APPROVALS
+
+            <span id="approval-count">
+                {{ approvals|length }}
+            </span>
+
+        </div>
+
+
+        <div id="approval-list">
+
+            {% if approvals %}
+
+                {% for approval in approvals %}
+
+                <div
+                    class="approval-card"
+                    data-approval-id="{{ approval.id }}"
+                >
+
+                    <div class="approval-header">
+
+                        <div>
+                            <strong>
+                                APPROVAL #{{ approval.id }}
+                            </strong>
                         </div>
-                        {% endfor %}
+
+                        <div class="approval-risk">
+                            RISK:
+                            {{ approval.risk|upper }}
+                        </div>
+
                     </div>
+
+
+                    <div class="approval-agent">
+
+                        AGENT:
+                        <strong>
+                            {{ approval.agent }}
+                        </strong>
+
+                    </div>
+
+
+                    <div class="approval-action">
+
+                        ACTION:
+                        <strong>
+                            {{ approval.action }}
+                        </strong>
+
+                    </div>
+
+
+                    <div class="approval-description">
+
+                        {{ approval.description }}
+
+                    </div>
+
+
+                    {% if approval.plan %}
+
+                    <div class="approval-plan">
+
+                        <div class="approval-subtitle">
+                            PROPOSED PLAN
+                        </div>
+
+                        <ol>
+
+                            {% for step in approval.plan %}
+
+                            <li>
+                                {{ step }}
+                            </li>
+
+                            {% endfor %}
+
+                        </ol>
+
+                    </div>
+
+                    {% endif %}
+
+
+                    {% if approval.parameters %}
+
+                    <details class="approval-details">
+
+                        <summary>
+                            ACTION PARAMETERS
+                        </summary>
+
+                        <pre>{{ approval.parameters | tojson(indent=2) }}</pre>
+
+                    </details>
+
+                    {% endif %}
+
+
+                    <div class="approval-created">
+
+                        REQUESTED:
+                        {{ approval.created_at }}
+
+                    </div>
+
+
+                    <div class="approval-buttons">
+
+                        <button
+                            type="button"
+                            class="approval-deny"
+                            onclick="denyApproval({{ approval.id }})"
+                        >
+                            DENY
+                        </button>
+
+                        <button
+                            type="button"
+                            class="approval-approve"
+                            onclick="approveApproval({{ approval.id }})"
+                        >
+                            APPROVE
+                        </button>
+
+                    </div>
+
                 </div>
-            </section>
-        </main>
 
-        <footer class="pip-footer">
-            <a href="/vault"><button type="button" class="footer-btn">OPEN VAULT</button></a>
-            <button id="advance-time" class="footer-btn">ADVANCE TIME</button>
-        </footer>
-    </div>
+                {% endfor %}
 
-    <script src="/static/js/app.js"></script>
+            {% else %}
+
+                <div class="empty" id="no-approvals">
+                    No actions waiting for Creator approval.
+                </div>
+
+            {% endif %}
+
+        </div>
+
+    </section>
+
+
+    <!-- ============================================================
+         NAVIGATION
+         ============================================================ -->
+
+    <nav class="tabs">
+
+        <button
+            class="tab active"
+            data-tab="command"
+        >
+            COMMAND
+        </button>
+
+        <button
+            class="tab"
+            data-tab="agents"
+        >
+            AGENTS
+        </button>
+
+        <button
+            class="tab"
+            data-tab="intel"
+        >
+            INTEL
+        </button>
+
+        <button
+            class="tab"
+            data-tab="logs"
+        >
+            LOGS
+        </button>
+
+    </nav>
+
+
+    <!-- ============================================================
+         MAIN CONTENT
+         ============================================================ -->
+
+    <main class="content">
+
+
+        <!-- ========================================================
+             COMMAND
+             ======================================================== -->
+
+        <section
+            id="command"
+            class="tab-content active"
+        >
+
+            <div class="panel">
+
+                <div class="panel-title">
+                    BOSS TERMINAL
+                </div>
+
+
+                <div
+                    id="response-area"
+                    class="response-box"
+                >
+                    Type orders below.
+
+                    Try:
+                    <strong>status</strong>
+
+                    or
+
+                    <strong>help</strong>
+                </div>
+
+
+                <form
+                    id="command-form"
+                    class="command-form"
+                >
+
+                    <input
+                        type="text"
+                        id="command-input"
+                        placeholder="Enter order for Boss..."
+                        autocomplete="off"
+                        enterkeyhint="send"
+                    >
+
+                    <button type="submit">
+                        EXECUTE
+                    </button>
+
+                </form>
+
+
+                <div class="quick-actions">
+
+                    <button
+                        onclick="sendQuick('status')"
+                    >
+                        STATUS
+                    </button>
+
+                    <button
+                        onclick="sendQuick('balance')"
+                    >
+                        BALANCE
+                    </button>
+
+                    <button
+                        onclick="sendQuick('farm opportunities')"
+                    >
+                        FARM INFO
+                    </button>
+
+                    <button
+                        onclick="sendQuick('help')"
+                    >
+                        HELP
+                    </button>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- ========================================================
+             AGENTS
+             ======================================================== -->
+
+        <section
+            id="agents"
+            class="tab-content"
+        >
+
+            <div class="panel">
+
+                <div class="panel-title">
+                    ACTIVE AGENTS
+                </div>
+
+
+                <div id="agents-list">
+
+                    {% for name, info in agents.items() %}
+
+                    <a
+                        class="agent-card"
+                        href="/agent/{{ name }}"
+                    >
+
+                        <div class="agent-name">
+                            {{ name }}
+                        </div>
+
+                        <div class="agent-role">
+                            {{ info.role }}
+                        </div>
+
+                        <div class="agent-status">
+                            {{ info.status }}
+                        </div>
+
+                    </a>
+
+                    {% endfor %}
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- ========================================================
+             INTEL
+             ======================================================== -->
+
+        <section
+            id="intel"
+            class="tab-content"
+        >
+
+            <div class="panel">
+
+                <div class="panel-title">
+                    KNOWLEDGE VAULT
+                </div>
+
+
+                <div class="stat-row">
+
+                    <span>
+                        Info Points:
+                    </span>
+
+                    <span id="info-points">
+                        {{ world.resources.info_points }}
+                    </span>
+
+                </div>
+
+
+                <div class="stat-row">
+
+                    <span>
+                        Knowledge Entries:
+                    </span>
+
+                    <span id="knowledge-count">
+                        {{ knowledge_count }}
+                    </span>
+
+                </div>
+
+
+                <div
+                    class="panel-title"
+                    style="margin-top:1rem;"
+                >
+                    PENDING TASKS
+                </div>
+
+
+                <div id="tasks-list">
+
+                    {% if pending_tasks %}
+
+                        {% for task in pending_tasks %}
+
+                        <div class="task-item">
+
+                            <strong>
+                                #{{ task.id }}
+                            </strong>
+
+                            {{ task.title }}
+
+                            <div class="task-meta">
+                                → {{ task.assigned_to }}
+                            </div>
+
+                        </div>
+
+                        {% endfor %}
+
+                    {% else %}
+
+                        <div class="empty">
+                            No pending tasks
+                        </div>
+
+                    {% endif %}
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- ========================================================
+             LOGS
+             ======================================================== -->
+
+        <section
+            id="logs"
+            class="tab-content"
+        >
+
+            <div class="panel">
+
+                <div class="panel-title">
+                    SYSTEM LOGS
+                </div>
+
+
+                <div
+                    id="logs-list"
+                    class="logs-box"
+                >
+
+                    {% for log in logs|reverse %}
+
+                    <div class="log-entry">
+
+                        <span class="log-time">
+                            {{ log.timestamp[11:16] }}
+                        </span>
+
+                        <span class="log-agent">
+                            [{{ log.agent }}]
+                        </span>
+
+                        <span class="log-msg">
+                            {{ log.message }}
+                        </span>
+
+                    </div>
+
+                    {% endfor %}
+
+                </div>
+
+            </div>
+
+        </section>
+
+    </main>
+
+
+    <!-- ============================================================
+         FOOTER
+         ============================================================ -->
+
+    <footer class="pip-footer">
+
+        <a href="/vault">
+            <button
+                type="button"
+                class="footer-btn"
+            >
+                OPEN VAULT
+            </button>
+        </a>
+
+
+        <button
+            id="advance-time"
+            class="footer-btn"
+        >
+            ADVANCE TIME
+        </button>
+
+    </footer>
+
+</div>
+
+
+<!-- ================================================================
+     APPROVAL / MODE JAVASCRIPT
+
+     This is deliberately kept here for now.
+
+     We will later move the growing Creator-control logic into
+     app.js once the backend behaviour has been tested.
+     ================================================================ -->
+
+<script>
+
+async function setOperatingMode(mode) {
+
+    const label =
+        mode === "live"
+            ? "LIVE"
+            : "SIMULATION";
+
+    if (mode === "live") {
+
+        const confirmed = window.confirm(
+            "WARNING: Switch the agent system to LIVE mode?\n\n" +
+            "Protected actions will STILL require your individual " +
+            "Creator approval.\n\n" +
+            "Continue?"
+        );
+
+        if (!confirmed) {
+            return;
+        }
+    }
+
+
+    const formData = new FormData();
+
+    formData.append(
+        "mode",
+        mode
+    );
+
+
+    try {
+
+        const response = await fetch(
+            "/api/mode",
+            {
+                method: "POST",
+                body: formData
+            }
+        );
+
+
+        const data = await response.json();
+
+
+        if (!response.ok || !data.success) {
+
+            alert(
+                data.error ||
+                "Unable to change operating mode."
+            );
+
+            return;
+        }
+
+
+        updateSafetyDisplay(
+            data.safety
+        );
+
+
+        await refreshApprovals();
+
+
+    } catch (error) {
+
+        console.error(
+            "Mode change failed:",
+            error
+        );
+
+        alert(
+            "Could not contact the agent system."
+        );
+    }
+}
+
+
+function updateSafetyDisplay(safety) {
+
+    const container =
+        document.getElementById(
+            "safety-status"
+        );
+
+    if (!container) {
+        return;
+    }
+
+
+    if (safety.live) {
+
+        container.innerHTML = `
+            <div class="safety-live">
+                <strong>⚠ LIVE MODE</strong>
+                <span>
+                    Live-capable tools are available.
+                    Protected actions still require Creator approval.
+                </span>
+            </div>
+        `;
+
+    } else {
+
+        container.innerHTML = `
+            <div class="safety-simulation">
+                <strong>● SIMULATION MODE</strong>
+                <span>
+                    Agents are operating inside the simulation.
+                </span>
+            </div>
+        `;
+    }
+}
+
+
+async function refreshApprovals() {
+
+    try {
+
+        const response = await fetch(
+            "/api/approvals"
+        );
+
+
+        if (!response.ok) {
+            return;
+        }
+
+
+        const data =
+            await response.json();
+
+
+        renderApprovals(
+            data.pending || []
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            "Approval refresh failed:",
+            error
+        );
+    }
+}
+
+
+function renderApprovals(approvals) {
+
+    const list =
+        document.getElementById(
+            "approval-list"
+        );
+
+    const count =
+        document.getElementById(
+            "approval-count"
+        );
+
+
+    if (!list) {
+        return;
+    }
+
+
+    if (count) {
+
+        count.textContent =
+            approvals.length;
+    }
+
+
+    if (!approvals.length) {
+
+        list.innerHTML = `
+            <div class="empty" id="no-approvals">
+                No actions waiting for Creator approval.
+            </div>
+        `;
+
+        return;
+    }
+
+
+    list.innerHTML =
+        approvals
+            .map(
+                approval =>
+                    buildApprovalCard(
+                        approval
+                    )
+            )
+            .join("");
+}
+
+
+function buildApprovalCard(approval) {
+
+    const plan =
+        Array.isArray(approval.plan)
+            ? approval.plan
+            : [];
+
+
+    const parameters =
+        approval.parameters || {};
+
+
+    const planHtml =
+        plan.length
+            ? `
+                <div class="approval-plan">
+
+                    <div class="approval-subtitle">
+                        PROPOSED PLAN
+                    </div>
+
+                    <ol>
+                        ${plan
+                            .map(
+                                step =>
+                                    `<li>${escapeHtml(step)}</li>`
+                            )
+                            .join("")}
+                    </ol>
+
+                </div>
+            `
+            : "";
+
+
+    const parametersHtml =
+        Object.keys(parameters).length
+            ? `
+                <details class="approval-details">
+
+                    <summary>
+                        ACTION PARAMETERS
+                    </summary>
+
+                    <pre>${escapeHtml(
+                        JSON.stringify(
+                            parameters,
+                            null,
+                            2
+                        )
+                    )}</pre>
+
+                </details>
+            `
+            : "";
+
+
+    return `
+        <div
+            class="approval-card"
+            data-approval-id="${approval.id}"
+        >
+
+            <div class="approval-header">
+
+                <div>
+                    <strong>
+                        APPROVAL #${approval.id}
+                    </strong>
+                </div>
+
+                <div class="approval-risk">
+                    RISK:
+                    ${escapeHtml(
+                        String(
+                            approval.risk ||
+                            "unknown"
+                        ).toUpperCase()
+                    )}
+                </div>
+
+            </div>
+
+
+            <div class="approval-agent">
+
+                AGENT:
+                <strong>
+                    ${escapeHtml(
+                        approval.agent ||
+                        "Unknown"
+                    )}
+                </strong>
+
+            </div>
+
+
+            <div class="approval-action">
+
+                ACTION:
+                <strong>
+                    ${escapeHtml(
+                        approval.action ||
+                        "Unknown"
+                    )}
+                </strong>
+
+            </div>
+
+
+            <div class="approval-description">
+
+                ${escapeHtml(
+                    approval.description ||
+                    ""
+                )}
+
+            </div>
+
+
+            ${planHtml}
+
+
+            ${parametersHtml}
+
+
+            <div class="approval-created">
+
+                REQUESTED:
+                ${escapeHtml(
+                    approval.created_at ||
+                    ""
+                )}
+
+            </div>
+
+
+            <div class="approval-buttons">
+
+                <button
+                    type="button"
+                    class="approval-deny"
+                    onclick="denyApproval(${approval.id})"
+                >
+                    DENY
+                </button>
+
+                <button
+                    type="button"
+                    class="approval-approve"
+                    onclick="approveApproval(${approval.id})"
+                >
+                    APPROVE
+                </button>
+
+            </div>
+
+        </div>
+    `;
+}
+
+
+async function approveApproval(
+    approvalId
+) {
+
+    const confirmed =
+        window.confirm(
+            "Approve action #" +
+            approvalId +
+            "?"
+        );
+
+
+    if (!confirmed) {
+        return;
+    }
+
+
+    await submitApprovalDecision(
+        approvalId,
+        "approve"
+    );
+}
+
+
+async function denyApproval(
+    approvalId
+) {
+
+    const confirmed =
+        window.confirm(
+            "Deny action #" +
+            approvalId +
+            "?"
+        );
+
+
+    if (!confirmed) {
+        return;
+    }
+
+
+    await submitApprovalDecision(
+        approvalId,
+        "deny"
+    );
+}
+
+
+async function submitApprovalDecision(
+    approvalId,
+    decision
+) {
+
+    const formData =
+        new FormData();
+
+
+    formData.append(
+        "reason",
+        "Creator decision from dashboard"
+    );
+
+
+    try {
+
+        const response =
+            await fetch(
+                `/api/approvals/${approvalId}/${decision}`,
+                {
+                    method: "POST",
+                    body: formData
+                }
+            );
+
+
+        const data =
+            await response.json();
+
+
+        if (!response.ok || !data.success) {
+
+            alert(
+                data.error ||
+                "Approval action failed."
+            );
+
+            return;
+        }
+
+
+        await refreshApprovals();
+
+
+    } catch (error) {
+
+        console.error(
+            "Approval decision failed:",
+            error
+        );
+
+        alert(
+            "Could not contact the agent system."
+        );
+    }
+}
+
+
+function escapeHtml(value) {
+
+    return String(value)
+        .replace(
+            /&/g,
+            "&amp;"
+        )
+        .replace(
+            /</g,
+            "&lt;"
+        )
+        .replace(
+            />/g,
+            "&gt;"
+        )
+        .replace(
+            /"/g,
+            "&quot;"
+        )
+        .replace(
+            /'/g,
+            "&#039;"
+        );
+}
+
+
+/*
+ * Automatically check for new Creator approval requests.
+ *
+ * This means the Creator dashboard does not have to be manually
+ * refreshed every time an autonomous agent creates a request.
+ */
+
+setInterval(
+    refreshApprovals,
+    5000
+);
+
+
+/*
+ * Initial approval refresh.
+ */
+
+document.addEventListener(
+    "DOMContentLoaded",
+    function () {
+
+        refreshApprovals();
+
+    }
+);
+
+</script>
+
+
+<!-- Existing application JavaScript -->
+
+<script src="/static/js/app.js"></script>
+
 </body>
 </html>
+
+
+
