@@ -2,189 +2,111 @@
 Creator Approval Gate
 ---------------------
 
-Controls consequential actions in REAL mode.
+Controls consequential actions in the agent system.
 
-Agents may:
+Rules:
 
-    - research
-    - reason
-    - plan
-    - prepare
-    - communicate internally
-
-Protected consequential actions require an explicit Creator
-approval before execution.
-
-Approvals are:
-
-    - persistent
-    - tied to an agent
-    - tied to a specific action
-    - tied to exact parameters
-    - single-use
+- Agents may request an approval.
+- The Creator decides whether it is allowed.
+- Approval is tied to the exact agent, tool and parameters.
+- An approval can only be consumed once.
+- Approvals cannot be reused for a different action.
+- Simulation-safe actions do not need Creator approval.
 """
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import copy
+
+from .memory import SharedMemory
 
 
 class ApprovalGate:
-    def __init__(
-        self,
-        memory,
-    ):
+    """
+    Central Creator approval system.
+
+    This class deliberately does not execute tools.
+
+    It only manages:
+        REQUEST
+        APPROVE
+        DENY
+        CONSUME
+
+    Tool execution remains the responsibility of ToolRegistry.
+    """
+
+    def __init__(self, memory: SharedMemory):
         self.memory = memory
 
-        if "approvals" not in self.memory.data:
-            self.memory.data[
-                "approvals"
-            ] = []
-
-            self.memory.save()
-
-        self._normalise()
-
-    # ------------------------------------------------------------------
-    # Normalisation
-    # ------------------------------------------------------------------
-
-    def _normalise(self) -> None:
-        for item in self.memory.data.get(
+        self.memory.data.setdefault(
             "approvals",
             [],
-        ):
-            item.setdefault(
-                "status",
-                "pending",
-            )
+        )
 
-            item.setdefault(
-                "created_at",
-                item.get(
-                    "timestamp",
-                    datetime.utcnow().isoformat(),
-                ),
-            )
-
-            item.setdefault(
-                "updated_at",
-                item.get(
-                    "created_at"
-                ),
-            )
-
-            item.setdefault(
-                "decision",
-                None,
-            )
-
-            item.setdefault(
-                "decided_by",
-                None,
-            )
-
-            item.setdefault(
-                "decision_reason",
-                None,
-            )
+        self.memory.save()
 
     # ------------------------------------------------------------------
-    # Create request
+    # REQUEST
     # ------------------------------------------------------------------
 
     def request(
         self,
-        action: str,
-        description: str,
-        parameters: Optional[
-            Dict[str, Any]
-        ] = None,
+        tool_name: str,
+        reason: str,
+        payload: Optional[Dict[str, Any]] = None,
         agent: str = "Unknown",
-        plan: Optional[
-            List[str]
-        ] = None,
-        risk: str = "medium",
+        risk: str = "high",
     ) -> Dict[str, Any]:
+        """
+        Create a new pending Creator approval.
 
-        approvals = self.memory.data.setdefault(
-            "approvals",
-            [],
-        )
+        Every request receives its own immutable snapshot of the
+        requested action parameters.
+        """
+
+        approvals = self.memory.data["approvals"]
 
         next_id = 1
 
         if approvals:
             next_id = max(
-                int(
-                    item.get(
-                        "id",
-                        0,
-                    )
-                )
+                int(item.get("id", 0))
                 for item in approvals
             ) + 1
 
-        now = datetime.utcnow().isoformat()
-
         item = {
             "id": next_id,
-            "action": action,
-            "description": description,
-            "parameters": parameters or {},
             "agent": agent,
-            "plan": plan or [],
+            "tool": tool_name,
+            "reason": reason,
             "risk": risk,
+            "payload": copy.deepcopy(payload or {}),
             "status": "pending",
-            "decision": None,
-            "decided_by": None,
-            "decision_reason": None,
-            "created_at": now,
-            "updated_at": now,
+            "created_at": self._timestamp(),
+            "decided_at": None,
+            "consumed_at": None,
+            "execution_started": False,
         }
 
-        approvals.append(
-            item
-        )
+        approvals.append(item)
 
-        self.memory.data[
-            "approvals"
-        ] = approvals[-200:]
+        self.memory.save()
 
         self.memory.log(
             "ApprovalGate",
             (
-                f"Approval requested "
-                f"#{next_id}: {action} "
-                f"by {agent}"
+                f"Creator approval requested: "
+                f"#{next_id} "
+                f"{agent} -> {tool_name}"
             ),
         )
 
-        self.memory.save()
-
-        return item
+        return copy.deepcopy(item)
 
     # ------------------------------------------------------------------
-    # Query
+    # READ
     # ------------------------------------------------------------------
-
-    def get_pending(
-        self,
-    ) -> List[Dict[str, Any]]:
-        return [
-            item
-            for item in self.memory.data.get(
-                "approvals",
-                [],
-            )
-            if item.get(
-                "status"
-            ) == "pending"
-        ]
-
-    def list_pending(
-        self,
-    ) -> List[Dict[str, Any]]:
-        return self.get_pending()
 
     def get(
         self,
@@ -194,182 +116,228 @@ class ApprovalGate:
             "approvals",
             [],
         ):
-            if int(
-                item.get(
-                    "id",
-                    0,
-                )
-            ) == int(
-                approval_id
-            ):
-                return item
+            if int(item.get("id", -1)) == int(approval_id):
+                return copy.deepcopy(item)
 
         return None
 
+    def list_pending(self) -> List[Dict[str, Any]]:
+        return [
+            copy.deepcopy(item)
+            for item in self.memory.data.get(
+                "approvals",
+                [],
+            )
+            if item.get("status") == "pending"
+        ]
+
+    def list_all(self) -> List[Dict[str, Any]]:
+        return [
+            copy.deepcopy(item)
+            for item in self.memory.data.get(
+                "approvals",
+                [],
+            )
+        ]
+
     # ------------------------------------------------------------------
-    # Decisions
+    # DECISION
     # ------------------------------------------------------------------
 
-    def approve(
-        self,
-        approval_id: int,
-        decided_by: str = "Creator",
-        reason: str = "",
-    ) -> Optional[
-        Dict[str, Any]
-    ]:
-        item = self.get(
-            approval_id
-        )
-
-        if item is None:
-            return None
-
-        if item.get(
-            "status"
-        ) != "pending":
-            return item
-
-        item["status"] = "approved"
-        item["decision"] = "approved"
-        item["decided_by"] = decided_by
-        item["decision_reason"] = reason
-        item["updated_at"] = (
-            datetime.utcnow().isoformat()
-        )
-
-        self.memory.log(
-            "Creator",
-            (
-                f"APPROVED action "
-                f"#{approval_id}: "
-                f"{item.get('action')}"
-            ),
-        )
-
-        self.memory.save()
-
-        return item
-
-    def deny(
-        self,
-        approval_id: int,
-        decided_by: str = "Creator",
-        reason: str = "",
-    ) -> Optional[
-        Dict[str, Any]
-    ]:
-        item = self.get(
-            approval_id
-        )
-
-        if item is None:
-            return None
-
-        if item.get(
-            "status"
-        ) != "pending":
-            return item
-
-        item["status"] = "denied"
-        item["decision"] = "denied"
-        item["decided_by"] = decided_by
-        item["decision_reason"] = reason
-        item["updated_at"] = (
-            datetime.utcnow().isoformat()
-        )
-
-        self.memory.log(
-            "Creator",
-            (
-                f"DENIED action "
-                f"#{approval_id}: "
-                f"{item.get('action')}"
-            ),
-        )
-
-        self.memory.save()
-
-        return item
-
-    # Backwards-compatible interface.
     def decide(
         self,
         approval_id: int,
         allow: bool,
     ) -> str:
-        if allow:
-            result = self.approve(
-                approval_id
-            )
-        else:
-            result = self.deny(
-                approval_id
+        """
+        Approve or deny a pending request.
+
+        An already decided request cannot be changed.
+        """
+
+        for item in self.memory.data.get(
+            "approvals",
+            [],
+        ):
+            if int(item.get("id", -1)) != int(approval_id):
+                continue
+
+            if item.get("status") != "pending":
+                return (
+                    f"Approval #{approval_id} has already been "
+                    f"{item.get('status')}."
+                )
+
+            item["status"] = (
+                "approved"
+                if allow
+                else "denied"
             )
 
-        if result is None:
+            item["decided_at"] = self._timestamp()
+
+            self.memory.save()
+
+            self.memory.log(
+                "ApprovalGate",
+                (
+                    f"Creator "
+                    f"{'approved' if allow else 'denied'} "
+                    f"#{approval_id}"
+                ),
+            )
+
             return (
-                f"No approval #{approval_id}."
+                f"Approval #{approval_id} "
+                f"{'approved' if allow else 'denied'}."
             )
 
-        return (
-            f"Approval #{approval_id} "
-            f"{result.get('status')}."
-        )
+        return f"No pending approval #{approval_id}."
 
     # ------------------------------------------------------------------
-    # Single-use execution
+    # VALIDATION
     # ------------------------------------------------------------------
 
-    def consume_approval(
+    def validate(
         self,
         approval_id: int,
+        tool_name: str,
+        agent: str,
+        payload: Dict[str, Any],
     ) -> bool:
-        item = self.get(
-            approval_id
-        )
+        """
+        Check that an approval exactly matches the action attempting
+        to consume it.
 
-        if item is None:
+        This prevents an approval for one action being substituted
+        for another action.
+        """
+
+        item = self.get(approval_id)
+
+        if not item:
             return False
 
-        if item.get(
-            "status"
-        ) != "approved":
+        if item.get("status") != "approved":
             return False
 
-        item["status"] = "consumed"
-        item["updated_at"] = (
-            datetime.utcnow().isoformat()
+        if item.get("tool") != tool_name:
+            return False
+
+        if item.get("agent") != agent:
+            return False
+
+        approved_payload = item.get(
+            "payload",
+            {},
         )
 
-        self.memory.log(
-            "ApprovalGate",
-            (
-                f"Consumed approval "
-                f"#{approval_id}"
-            ),
-        )
+        return approved_payload == payload
 
-        self.memory.save()
+    # ------------------------------------------------------------------
+    # CONSUME
+    # ------------------------------------------------------------------
 
-        return True
-
-    def reject_execution(
+    def consume(
         self,
         approval_id: int,
+        tool_name: str,
+        agent: str,
+        payload: Dict[str, Any],
     ) -> bool:
-        item = self.get(
-            approval_id
-        )
+        """
+        Consume an approved action.
 
-        if item is None:
-            return False
+        Consumption happens BEFORE the protected tool executes.
 
-        item["status"] = "execution_failed"
-        item["updated_at"] = (
-            datetime.utcnow().isoformat()
-        )
+        This is intentional.
 
-        self.memory.save()
+        If the external action subsequently fails, the approval is
+        still consumed and cannot silently be reused.
+        """
 
-        return True
+        for item in self.memory.data.get(
+            "approvals",
+            [],
+        ):
+            if int(item.get("id", -1)) != int(approval_id):
+                continue
+
+            if item.get("status") != "approved":
+                return False
+
+            if item.get("tool") != tool_name:
+                return False
+
+            if item.get("agent") != agent:
+                return False
+
+            if item.get("payload", {}) != payload:
+                return False
+
+            if item.get("execution_started"):
+                return False
+
+            item["execution_started"] = True
+            item["status"] = "consumed"
+            item["consumed_at"] = self._timestamp()
+
+            self.memory.save()
+
+            self.memory.log(
+                "ApprovalGate",
+                (
+                    f"Consumed Creator approval "
+                    f"#{approval_id} for {tool_name}"
+                ),
+            )
+
+            return True
+
+        return False
+
+    # ------------------------------------------------------------------
+    # EXECUTION RESULT
+    # ------------------------------------------------------------------
+
+    def mark_execution_result(
+        self,
+        approval_id: int,
+        success: bool,
+        result: Any = None,
+        error: Optional[str] = None,
+    ) -> bool:
+        """
+        Record the result of an action whose approval has already
+        been consumed.
+
+        The approval itself remains consumed regardless of success.
+        """
+
+        for item in self.memory.data.get(
+            "approvals",
+            [],
+        ):
+            if int(item.get("id", -1)) != int(approval_id):
+                continue
+
+            item["execution_result"] = {
+                "success": bool(success),
+                "result": result,
+                "error": error,
+                "recorded_at": self._timestamp(),
+            }
+
+            self.memory.save()
+
+            return True
+
+        return False
+
+    # ------------------------------------------------------------------
+    # INTERNAL
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _timestamp() -> str:
+        return datetime.utcnow().isoformat()
