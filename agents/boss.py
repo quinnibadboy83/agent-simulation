@@ -1,25 +1,19 @@
 """
-Boss Agent - Super Overseer
----------------------------
+Boss Agent
+----------
 
-The Boss is the primary commander of the agent simulation.
+Primary commander of the agent simulation.
 
-Responsibilities include:
+The Boss:
 
-    - receiving Creator commands
-    - checking system status
-    - assigning tasks
-    - requesting research
-    - using approved tools
-    - managing economy commands
-    - drafting content
-    - coordinating other agents
-
-The Boss does not bypass ToolRegistry.
-All tool execution goes through the central tool gateway.
+    - receives Creator commands
+    - coordinates other agents
+    - performs research
+    - manages tasks
+    - monitors the economy
+    - creates content drafts
+    - uses the central ToolRegistry
 """
-
-from typing import Any, Dict
 
 from .base_agent import BaseAgent
 from core.memory import SharedMemory
@@ -27,9 +21,6 @@ from core.tools import ToolRegistry
 
 
 class BossAgent(BaseAgent):
-    """
-    Main commander / overseer agent.
-    """
 
     def __init__(
         self,
@@ -52,14 +43,17 @@ class BossAgent(BaseAgent):
         )
 
     # ------------------------------------------------------------------
-    # Command processing
+    # Commands
     # ------------------------------------------------------------------
 
     def process_command(
         self,
         command: str,
     ) -> str:
-        command = str(command or "").strip()
+
+        command = str(
+            command or ""
+        ).strip()
 
         if not command:
             return (
@@ -73,11 +67,11 @@ class BossAgent(BaseAgent):
             f"Received command: {command}",
         )
 
-        if cmd in [
+        if cmd in {
             "status",
             "report",
             "overview",
-        ]:
+        }:
             return self.full_status_report()
 
         if (
@@ -88,32 +82,39 @@ class BossAgent(BaseAgent):
                 command
             )
 
-        if cmd in [
+        if cmd in {
             "balance",
             "funds",
-        ]:
+        }:
             result = self.execute_tool(
                 "check_balance"
             )
 
-            balance = (
-                result.get("result", {})
-                .get("balance", 0)
+            balance = result.get(
+                "result",
+                {},
+            ).get(
+                "balance",
+                0,
             )
 
             return (
-                f"Current balance under Banker: "
+                f"Current balance: "
                 f"${balance:.2f}"
             )
 
-        if cmd in [
+        if cmd in {
             "help",
             "?",
-        ]:
+        }:
             return self.get_command_help()
 
-        if cmd.startswith("say "):
-            message = command[4:].strip()
+        if cmd.startswith(
+            "say "
+        ):
+            message = command[
+                4:
+            ].strip()
 
             self.memory.log(
                 "Boss",
@@ -125,8 +126,12 @@ class BossAgent(BaseAgent):
                 f"{message}"
             )
 
-        if cmd.startswith("make post"):
-            topic = command[9:].strip()
+        if cmd.startswith(
+            "make post"
+        ):
+            topic = command[
+                9:
+            ].strip()
 
             topic = topic.replace(
                 "about",
@@ -147,40 +152,29 @@ class BossAgent(BaseAgent):
             cmd.startswith("search ")
             or cmd.startswith("web ")
         ):
-            query = (
-                command.split(
-                    " ",
-                    1,
-                )[1]
-                if " " in command
-                else ""
-            )
-
-            if not query:
-                return (
-                    "Usage: search <your query>"
-                )
+            query = command.split(
+                " ",
+                1,
+            )[1]
 
             return self._format_search(
                 query
             )
 
-        if cmd.startswith("read "):
-            url = (
-                command.split(
-                    " ",
-                    1,
-                )[1]
-                if " " in command
-                else ""
-            )
+        if cmd.startswith(
+            "read "
+        ):
+            url = command.split(
+                " ",
+                1,
+            )[1]
 
             if not url.startswith(
                 "http"
             ):
                 return (
                     "Please provide a full URL "
-                    "starting with http"
+                    "starting with http."
                 )
 
             result = self.execute_tool(
@@ -188,38 +182,33 @@ class BossAgent(BaseAgent):
                 url=url,
             )
 
-            if result.get("success"):
-                page = result.get(
-                    "result",
-                    {},
+            if not result.get(
+                "success"
+            ):
+                return (
+                    "Failed to read page: "
+                    f"{result.get('error')}"
                 )
 
-                return (
-                    f"Page: "
-                    f"{page.get('title', '')}\n\n"
-                    f"{str(page.get('content', ''))[:2000]}"
-                )
+            page = result.get(
+                "result",
+                {},
+            )
 
             return (
-                "Failed to read page: "
-                f"{result.get('error')}"
+                f"Page: "
+                f"{page.get('title', '')}\n\n"
+                f"{str(page.get('content', ''))[:2500]}"
             )
 
         if (
             cmd.startswith("farm ")
             or cmd.startswith("research ")
         ):
-            topic = (
-                command.split(
-                    " ",
-                    1,
-                )[1].strip()
-            )
-
-            if not topic:
-                topic = (
-                    "general opportunities"
-                )
+            topic = command.split(
+                " ",
+                1,
+            )[1].strip()
 
             return self.order_info_farmer(
                 topic
@@ -227,32 +216,27 @@ class BossAgent(BaseAgent):
 
         if (
             cmd.startswith("money")
-            or cmd in [
+            or cmd in {
                 "scan",
                 "opportunities",
-            ]
+            }
         ):
             return self._handle_money_command(
                 command
             )
 
-        return self.think(
+        return self._brain_reason(
             command
         )
 
     # ------------------------------------------------------------------
-    # Cognitive response
+    # Brain
     # ------------------------------------------------------------------
 
-    def think(
+    def _brain_reason(
         self,
         command: str,
     ) -> str:
-        """
-        Send general reasoning requests to the configured brain.
-
-        The brain response does not directly execute tools.
-        """
 
         try:
             from core.brain import ask_brain
@@ -262,8 +246,8 @@ class BossAgent(BaseAgent):
             )
 
             self.remember(
-                f"Brain response: {result}",
-                category="reasoning",
+                str(result),
+                "reasoning",
             )
 
             return str(
@@ -273,13 +257,15 @@ class BossAgent(BaseAgent):
         except Exception as exc:
             self.memory.log(
                 "Boss",
-                f"Brain request failed: {exc}",
-                level="error",
+                f"Brain unavailable: {exc}",
+                level="warning",
             )
 
             return (
-                "The reasoning system is currently "
-                f"unavailable: {exc}"
+                f"Boss received: '{command}'.\n"
+                "No external brain is currently "
+                "configured, so no autonomous "
+                "LLM reasoning was performed."
             )
 
     # ------------------------------------------------------------------
@@ -290,13 +276,8 @@ class BossAgent(BaseAgent):
         self,
         topic: str,
     ) -> str:
-        """
-        Create a content draft.
 
-        This does NOT publish anything externally.
-        """
-
-        search = self.execute_tool(
+        result = self.execute_tool(
             "web_search",
             query=topic,
             max_results=3,
@@ -304,13 +285,14 @@ class BossAgent(BaseAgent):
 
         points = []
 
-        if search.get("success"):
-            for item in (
-                search.get(
-                    "result",
-                    [],
-                )[:3]
-            ):
+        if result.get(
+            "success"
+        ):
+            for item in result.get(
+                "result",
+                [],
+            )[:3]:
+
                 title = item.get(
                     "title",
                     "",
@@ -321,41 +303,29 @@ class BossAgent(BaseAgent):
                     "",
                 )
 
-                if (
-                    title
-                    and title != "Error"
-                ):
+                if title:
                     points.append(
                         f"- {title}: "
-                        f"{snippet[:140]}"
+                        f"{snippet[:160]}"
                     )
 
         if not points:
-            points = [
-                f"- Simple idea about {topic}"
-            ]
+            points.append(
+                f"- Research point about {topic}"
+            )
 
         caption = (
-            f"{topic.title()} in plain words.\n\n"
-            f"3 things worth knowing:\n"
+            f"{topic.title()}\n\n"
+            "A few useful points:\n"
             + "\n".join(points)
             + "\n\n"
-            "Save this if it is useful. "
-            "What would you add?"
-        )
-
-        image_prompt = (
-            f"Clean mobile-friendly graphic about "
-            f"{topic}, simple icons, dark green "
-            "and amber colours, no tiny text"
+            "This is a draft only. "
+            "Nothing has been published."
         )
 
         self.memory.add_knowledge(
             source="Boss",
-            content=(
-                f"Draft post about {topic}\n"
-                f"{caption}"
-            ),
+            content=caption,
             tags=[
                 "content",
                 "draft",
@@ -363,19 +333,9 @@ class BossAgent(BaseAgent):
             ],
         )
 
-        self.memory.log(
-            "Boss",
-            f"Drafted post about {topic}",
-        )
-
         return (
-            "CONTENT DRAFT\n"
-            f"Topic: {topic}\n\n"
-            f"CAPTION\n{caption}\n\n"
-            f"IMAGE IDEA\n{image_prompt}\n\n"
-            "Nothing has been posted. "
-            "Copy the caption, make the image, "
-            "then post it yourself."
+            "CONTENT DRAFT\n\n"
+            f"{caption}"
         )
 
     # ------------------------------------------------------------------
@@ -386,15 +346,18 @@ class BossAgent(BaseAgent):
         self,
         query: str,
     ) -> str:
+
         result = self.execute_tool(
             "web_search",
             query=query,
             max_results=5,
         )
 
-        if not result.get("success"):
+        if not result.get(
+            "success"
+        ):
             return (
-                f"Search failed: "
+                "Search failed: "
                 f"{result.get('error')}"
             )
 
@@ -405,10 +368,10 @@ class BossAgent(BaseAgent):
 
         if not results:
             return (
-                "No results found."
+                "No search results found."
             )
 
-        message = (
+        response = (
             f"Search results for "
             f"'{query}':\n\n"
         )
@@ -417,15 +380,14 @@ class BossAgent(BaseAgent):
             results,
             1,
         ):
-            message += (
+            response += (
                 f"{index}. "
                 f"{item.get('title', '')}\n"
                 f"   {item.get('url', '')}\n"
-                f"   {item.get('snippet', '')[:150]}"
-                "\n\n"
+                f"   {item.get('snippet', '')[:180]}\n\n"
             )
 
-        return message
+        return response
 
     # ------------------------------------------------------------------
     # Economy
@@ -435,16 +397,13 @@ class BossAgent(BaseAgent):
         self,
         command: str,
     ) -> str:
-        cmd = (
-            command
-            .lower()
-            .strip()
-        )
 
-        if cmd in [
+        cmd = command.lower().strip()
+
+        if cmd in {
             "money",
             "money help",
-        ]:
+        }:
             return self.get_money_help()
 
         if "mode" in cmd:
@@ -455,60 +414,54 @@ class BossAgent(BaseAgent):
                     mode="simulation",
                 )
 
-                return result.get(
-                    "result",
-                    str(result),
-                )
-
-            if "real" in cmd:
+            elif "real" in cmd:
                 result = self.execute_tool(
                     "money_mode",
                     mode="real",
                 )
 
-                return result.get(
-                    "result",
-                    str(result),
+            else:
+                result = self.execute_tool(
+                    "money_mode"
                 )
 
-            result = self.execute_tool(
-                "money_mode"
-            )
-
-            return result.get(
-                "result",
-                str(result),
+            return str(
+                result.get(
+                    "result",
+                    result,
+                )
             )
 
         if "report" in cmd:
+
             result = self.execute_tool(
                 "economy_report"
             )
 
-            if result.get("success"):
-                report = result.get(
-                    "result",
-                    {},
+            if not result.get(
+                "success"
+            ):
+                return str(
+                    result
                 )
 
-                return (
-                    f"=== ECONOMY REPORT "
-                    f"({report.get('mode', 'unknown')}) "
-                    "===\n"
-                    f"Opportunities: "
-                    f"{report.get('opportunities_total', 0)}\n"
-                    f"Total Revenue:  "
-                    f"${report.get('total_revenue', 0)}\n"
-                    f"Total Expenses: "
-                    f"${report.get('total_expenses', 0)}\n"
-                    f"Total Profit:   "
-                    f"${report.get('total_profit', 0)}\n"
-                    f"Active Experiments: "
-                    f"{report.get('active_experiments', 0)}"
-                )
+            report = result[
+                "result"
+            ]
 
-            return str(
-                result
+            return (
+                f"=== ECONOMY REPORT "
+                f"({report['mode']}) ===\n"
+                f"Opportunities: "
+                f"{report['opportunities_total']}\n"
+                f"Total Revenue: "
+                f"${report['total_revenue']}\n"
+                f"Total Expenses: "
+                f"${report['total_expenses']}\n"
+                f"Total Profit: "
+                f"${report['total_profit']}\n"
+                f"Active Experiments: "
+                f"{report['active_experiments']}"
             )
 
         if (
@@ -519,33 +472,34 @@ class BossAgent(BaseAgent):
                 "list_opportunities"
             )
 
-            if result.get("success"):
-                opportunities = result.get(
-                    "result",
-                    [],
+            if not result.get(
+                "success"
+            ):
+                return str(
+                    result
                 )
 
-                if not opportunities:
-                    return (
-                        "No opportunities yet."
-                    )
+            opportunities = result[
+                "result"
+            ]
 
-                message = (
-                    "Current Opportunities:\n"
+            if not opportunities:
+                return (
+                    "No opportunities yet."
                 )
 
-                for opportunity in opportunities:
-                    message += (
-                        f"[{opportunity['id']}] "
-                        f"{opportunity['name']} "
-                        f"— {opportunity['status']}\n"
-                    )
-
-                return message
-
-            return str(
-                result
+            response = (
+                "Current Opportunities:\n\n"
             )
+
+            for opportunity in opportunities:
+                response += (
+                    f"[{opportunity['id']}] "
+                    f"{opportunity['name']} "
+                    f"— {opportunity['status']}\n"
+                )
+
+            return response
 
         return self.get_money_help()
 
@@ -556,56 +510,43 @@ class BossAgent(BaseAgent):
     def full_status_report(
         self,
     ) -> str:
+
         agents = (
             self.memory.get_all_agent_status()
         )
 
-        pending = [
-            task
-            for task in self.memory.get_tasks()
-            if task.get("status") == "pending"
-        ]
-
-        balance = self.memory.get_balance(
-            "Banker"
+        pending = self.memory.get_tasks(
+            status="pending"
         )
 
-        knowledge_count = len(
+        balance = (
+            self.memory.get_balance(
+                "Banker"
+            )
+        )
+
+        knowledge = len(
             self.memory.data.get(
                 "knowledge",
                 [],
             )
         )
 
-        report = (
+        response = (
             "=== BOSS STATUS REPORT ===\n\n"
+            f"Bank Balance: ${balance:.2f}\n"
+            f"Knowledge entries: {knowledge}\n"
+            f"Pending tasks: {len(pending)}\n\n"
+            "Agents:\n"
         )
-
-        report += (
-            f"Bank Balance: "
-            f"${balance:.2f}\n"
-        )
-
-        report += (
-            f"Knowledge entries: "
-            f"{knowledge_count}\n"
-        )
-
-        report += (
-            f"Pending tasks: "
-            f"{len(pending)}\n\n"
-        )
-
-        report += "Agents:\n"
 
         for name, info in agents.items():
-            report += (
-                f"  - {name} "
-                f"({info.get('role')}) "
-                f"- {info.get('status')}\n"
+            response += (
+                f"  - {name}: "
+                f"{info.get('status', 'unknown')}\n"
             )
 
-        return report
+        return response
 
     # ------------------------------------------------------------------
     # InfoFarmer
@@ -615,13 +556,12 @@ class BossAgent(BaseAgent):
         self,
         topic: str,
     ) -> str:
+
         task = self.memory.add_task(
-            title=(
-                f"Farm info: {topic}"
-            ),
+            title=f"Farm info: {topic}",
             description=(
                 f"Gather useful information "
-                f"about: {topic}"
+                f"about {topic}"
             ),
             assigned_to="InfoFarmer",
             created_by="Boss",
@@ -636,51 +576,54 @@ class BossAgent(BaseAgent):
         self.memory.update_task(
             task["id"],
             "completed",
-            notes="Auto-executed",
+            "Research executed.",
         )
 
+        if result.get(
+            "success"
+        ):
+            return (
+                f"InfoFarmer research completed "
+                f"for '{topic}'."
+            )
+
         return (
-            f"Ordered InfoFarmer to research "
-            f"'{topic}'.\n"
-            f"Result: "
-            f"{result.get('result', result)}"
+            "InfoFarmer research failed: "
+            f"{result.get('error')}"
         )
 
     # ------------------------------------------------------------------
-    # Task assignment
+    # Tasks
     # ------------------------------------------------------------------
 
     def _handle_assign(
         self,
         command: str,
     ) -> str:
+
         parts = command.split()
 
         if len(parts) < 3:
             return (
                 "Usage: assign "
-                "<AgentName> "
-                "<task description>"
+                "<agent> <task>"
             )
 
         agent_name = parts[1]
-
-        task_description = " ".join(
+        description = " ".join(
             parts[2:]
         )
 
         task = self.memory.add_task(
-            title=task_description[:50],
-            description=task_description,
+            title=description[:60],
+            description=description,
             assigned_to=agent_name,
             created_by="Boss",
         )
 
         return (
-            f"Task created and assigned "
-            f"to {agent_name}:\n"
-            f"[{task['id']}] "
-            f"{task['title']}"
+            f"Task #{task['id']} assigned "
+            f"to {agent_name}."
         )
 
     # ------------------------------------------------------------------
@@ -691,18 +634,23 @@ class BossAgent(BaseAgent):
         self,
     ) -> str:
         return """
-status                  -> System overview
-help                    -> This help
-search <query>          -> Search the public web
-read <url>              -> Read a public page
-make post about <topic> -> Draft content, do not publish it
-money mode              -> Show economy mode
-money report            -> Economy summary
-farm <topic>            -> InfoFarmer research
-assign <agent> <task>   -> Assign a task
-Anything else           -> Brain reasoning
+status
+report
+balance
+help
+search <query>
+read <url>
+make post about <topic>
+farm <topic>
+research <topic>
+assign <agent> <task>
+money mode
+money mode simulation
+money mode real
+money report
+money opportunities
 """
-
+    
     def get_money_help(
         self,
     ) -> str:
@@ -712,5 +660,4 @@ money mode simulation
 money mode real
 money report
 money opportunities
-money list
 """
