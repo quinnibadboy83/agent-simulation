@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vault</title>
+  <style>
+    body { margin:0; background:#10160f; color:#d7e7c8; font-family:sans-serif; }
+    a { color:#b6f27c; text-decoration:none; }
+    header { padding:12px; border-bottom:2px solid #6cff6c; display:flex; justify-content:space-between; }
+    .vault { padding:12px; }
+    .room { border:2px solid #3d5a32; margin:8px 0; padding:10px; min-height:72px; background:#182216; position:relative; }
+    .room b { color:#8dff6a; }
+    .token { display:inline-block; margin:6px 6px 0 0; padding:6px 8px; background:#24361e; border:1px solid #8dff6a; }
+    .back { display:inline-block; margin:12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>VAULT</div>
+    <a href="/">Terminal</a>
+  </header>
+  <a class="back" href="/">Back to orders</a>
+  <div class="vault">
+    {% for room, people in rooms.items() %}
+    <div class="room">
+      <b>{{ room }}</b>
+      <div>
+        {% for name in people %}
+        <a class="token" href="/agent/{{ name }}">{{ name }}</a>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</body>
+</html>
