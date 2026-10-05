@@ -1,41 +1,55 @@
 """
-Agent Simulation - terminal, economy, research, vault, dossiers
-----------------------------------------------------------------
+Agent Simulation
+----------------
 
-The application supports two operating modes:
+FastAPI application entry point.
 
-    SIMULATION
-        Agents operate against the simulated world/economy.
-        No protected real-world action is executed.
+Architecture:
 
-    LIVE
-        Agents may access live-capable tools, but consequential
-        actions still require explicit Creator approval.
-
-The Creator Approval Gate is deliberately separate from the
-simulation/live switch.
-
-LIVE does NOT mean unrestricted.
-
-LIVE means:
-    "Live-capable tools are available, subject to their individual
-     safety and approval requirements."
+    Creator
+       |
+       v
+    FastAPI UI
+       |
+       v
+    Agents
+       |
+       v
+    Cognitive Rooms
+       |
+       v
+    Tool Registry
+       |
+       +---- Simulation
+       |
+       +---- REAL
+                |
+                v
+          Creator Approval
 """
 
-from fastapi import FastAPI, Request, Form
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse
-
-import uvicorn
 from pathlib import Path
 import os
+
+from fastapi import (
+    FastAPI,
+    Request,
+    Form,
+)
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+)
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+import uvicorn
 
 from core.memory import SharedMemory
 from core.world import World
 from core.economy import Economy
 from core.research import WebResearch
 from core.tools import create_default_tools
+from core.approvals import ApprovalGate
 
 from agents.boss import BossAgent
 from agents.banker import BankerAgent
@@ -43,42 +57,45 @@ from agents.info_farmer import InfoFarmerAgent
 from agents.opportunity_agent import OpportunityAgent
 
 
-# ----------------------------------------------------------------------
+# ======================================================================
 # APPLICATION
-# ----------------------------------------------------------------------
+# ======================================================================
 
 app = FastAPI(
     title="Agent Simulation",
-    version="0.2.0",
-    description=(
-        "Autonomous agent simulation with Creator approval controls "
-        "and simulation/live operating modes."
-    ),
 )
 
 
-# ----------------------------------------------------------------------
-# PATHS / STATIC FILES / TEMPLATES
-# ----------------------------------------------------------------------
+BASE_DIR = Path(
+    __file__
+).parent
 
-BASE_DIR = Path(__file__).parent
 
 app.mount(
     "/static",
     StaticFiles(
-        directory=BASE_DIR / "ui" / "static"
+        directory=(
+            BASE_DIR
+            / "ui"
+            / "static"
+        )
     ),
     name="static",
 )
 
+
 templates = Jinja2Templates(
-    directory=BASE_DIR / "ui" / "templates"
+    directory=(
+        BASE_DIR
+        / "ui"
+        / "templates"
+    )
 )
 
 
-# ----------------------------------------------------------------------
+# ======================================================================
 # CORE SYSTEMS
-# ----------------------------------------------------------------------
+# ======================================================================
 
 memory = SharedMemory()
 
@@ -101,10 +118,14 @@ tools = create_default_tools(
     research,
 )
 
+approvals = ApprovalGate(
+    memory
+)
 
-# ----------------------------------------------------------------------
+
+# ======================================================================
 # AGENTS
-# ----------------------------------------------------------------------
+# ======================================================================
 
 boss = BossAgent(
     memory,
@@ -136,9 +157,9 @@ agents = {
 }
 
 
-# ----------------------------------------------------------------------
-# AGENT SHEETS
-# ----------------------------------------------------------------------
+# ======================================================================
+# CREATOR UI DATA
+# ======================================================================
 
 SHEETS = {
     "Boss": {
@@ -153,7 +174,6 @@ SHEETS = {
             "Luck": 5,
         },
     },
-
     "Banker": {
         "role": "Ledger",
         "voice": "Counts twice. Refuses vague spend.",
@@ -166,7 +186,6 @@ SHEETS = {
             "Luck": 4,
         },
     },
-
     "InfoFarmer": {
         "role": "Research",
         "voice": "Keeps clippings. Hates losing a source.",
@@ -179,7 +198,6 @@ SHEETS = {
             "Luck": 5,
         },
     },
-
     "OpportunityAgent": {
         "role": "Scout",
         "voice": "Looks for a small test, not a fantasy.",
@@ -196,41 +214,66 @@ SHEETS = {
 
 
 # ======================================================================
-# CREATOR / SAFETY HELPERS
+# HELPERS
 # ======================================================================
 
-def get_operating_mode() -> str:
-    """
-    Return the current economy/operating mode.
+def get_mode() -> str:
+    try:
+        return economy.get_mode()
+    except Exception:
+        try:
+            if economy.is_real():
+                return "real"
 
-    The Economy class is currently the authoritative owner of the
-    simulation/live mode.
-    """
-    return economy.get_mode()
+            return "simulation"
+
+        except Exception:
+            return "simulation"
 
 
-def creator_safety_status() -> dict:
-    """
-    Return a clear machine-readable description of the current
-    safety state.
+def set_mode(
+    mode: str,
+):
+    mode = (
+        str(mode)
+        .strip()
+        .lower()
+    )
 
-    This is intentionally explicit so the UI can display exactly
-    what the system believes its operating state to be.
-    """
+    if mode == "sim":
+        mode = "simulation"
 
-    mode = get_operating_mode()
+    if mode == "live":
+        mode = "real"
 
-    is_live = str(mode).lower() == "real"
+    if mode not in {
+        "simulation",
+        "real",
+    }:
+        return {
+            "success": False,
+            "error": (
+                "Mode must be "
+                "simulation or real."
+            ),
+        }
 
-    pending = tools.approvals.get_pending()
+    try:
+        result = economy.set_mode(
+            mode
+        )
 
-    return {
-        "mode": mode,
-        "simulation": not is_live,
-        "live": is_live,
-        "creator_approval_required_for_protected_actions": True,
-        "pending_approvals": len(pending),
-    }
+        return {
+            "success": True,
+            "mode": mode,
+            "result": result,
+        }
+
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+        }
 
 
 # ======================================================================
@@ -241,7 +284,9 @@ def creator_safety_status() -> dict:
     "/",
     response_class=HTMLResponse,
 )
-async def home(request: Request):
+async def home(
+    request: Request,
+):
 
     return templates.TemplateResponse(
         "index.html",
@@ -250,7 +295,9 @@ async def home(request: Request):
             "world": world.get_summary(),
             "agents": memory.get_all_agent_status(),
             "logs": memory.get_logs(30),
-            "balance": memory.get_balance("Banker"),
+            "balance": memory.get_balance(
+                "Banker"
+            ),
             "knowledge_count": len(
                 memory.data.get(
                     "knowledge",
@@ -261,8 +308,8 @@ async def home(request: Request):
                 status="pending"
             ),
             "economy": economy.get_economy_report(),
-            "safety": creator_safety_status(),
-            "approvals": tools.approvals.get_pending(),
+            "mode": get_mode(),
+            "approvals": approvals.get_pending(),
         },
     )
 
@@ -271,13 +318,14 @@ async def home(request: Request):
 # COMMAND
 # ======================================================================
 
-@app.post("/command")
+@app.post(
+    "/command"
+)
 async def send_command(
     command: str = Form(...),
 ):
 
     if not command.strip():
-
         return JSONResponse(
             {
                 "response": "Empty command."
@@ -300,24 +348,26 @@ async def send_command(
                     [],
                 )
             ),
-            "economy_mode": economy.get_mode(),
-            "safety": creator_safety_status(),
-            "pending_approvals": tools.approvals.get_pending(),
+            "economy_mode": get_mode(),
         }
     )
 
 
 # ======================================================================
-# STATUS API
+# STATUS
 # ======================================================================
 
-@app.get("/api/status")
+@app.get(
+    "/api/status"
+)
 async def api_status():
 
     return {
         "world": world.get_summary(),
         "agents": memory.get_all_agent_status(),
-        "balance": memory.get_balance("Banker"),
+        "balance": memory.get_balance(
+            "Banker"
+        ),
         "knowledge_count": len(
             memory.data.get(
                 "knowledge",
@@ -329,200 +379,85 @@ async def api_status():
         ),
         "logs": memory.get_logs(20),
         "economy": economy.get_economy_report(),
-        "safety": creator_safety_status(),
-        "approvals": tools.approvals.get_pending(),
+        "mode": get_mode(),
+        "approvals": approvals.get_pending(),
     }
 
 
 # ======================================================================
-# SAFETY / OPERATING MODE
+# SAFETY / MODE
 # ======================================================================
 
-@app.get("/api/safety")
+@app.get(
+    "/api/safety"
+)
 async def api_safety():
 
-    return creator_safety_status()
+    return {
+        "mode": get_mode(),
+        "simulation": get_mode() == "simulation",
+        "real": get_mode() == "real",
+        "creator_approval_required_for_protected_actions": True,
+        "pending_approvals": len(
+            approvals.get_pending()
+        ),
+    }
 
 
-@app.post("/api/mode")
-async def set_mode(
-    mode: str = Form(...),
-):
-    """
-    Creator-controlled operating mode.
+@app.get(
+    "/api/mode"
+)
+async def api_mode():
 
-    Accepted values:
-
-        simulation
-        sim
-        real
-        live
-
-    SIMULATION is the safer default.
-
-    Switching to LIVE does not approve any pending action.
-    """
-
-    requested = mode.strip().lower()
-
-    if requested in {
-        "simulation",
-        "sim",
-    }:
-
-        result = economy.set_mode(
-            "simulation"
-        )
-
-    elif requested in {
-        "real",
-        "live",
-    }:
-
-        result = economy.set_mode(
-            "real"
-        )
-
-    else:
-
-        return JSONResponse(
-            {
-                "success": False,
-                "error": (
-                    "Invalid mode. Use "
-                    "'simulation' or 'live'."
-                ),
-            },
-            status_code=400,
-        )
-
-    return JSONResponse(
-        {
-            "success": True,
-            "result": result,
-            "safety": creator_safety_status(),
-        }
-    )
+    return {
+        "mode": get_mode()
+    }
 
 
-@app.post("/api/mode/{mode}")
-async def set_mode_path(
+@app.post(
+    "/api/mode/{mode}"
+)
+async def api_set_mode(
     mode: str,
 ):
-    """
-    Path-based version of the operating mode switch.
 
-    Example:
-
-        POST /api/mode/simulation
-        POST /api/mode/live
-    """
-
-    requested = mode.strip().lower()
-
-    if requested in {
-        "simulation",
-        "sim",
-    }:
-
-        result = economy.set_mode(
-            "simulation"
-        )
-
-    elif requested in {
-        "real",
-        "live",
-    }:
-
-        result = economy.set_mode(
-            "real"
-        )
-
-    else:
-
-        return JSONResponse(
-            {
-                "success": False,
-                "error": (
-                    "Invalid mode. Use "
-                    "'simulation' or 'live'."
-                ),
-            },
-            status_code=400,
-        )
-
-    return JSONResponse(
-        {
-            "success": True,
-            "result": result,
-            "safety": creator_safety_status(),
-        }
+    return set_mode(
+        mode
     )
 
 
 # ======================================================================
-# CREATOR APPROVAL QUEUE
+# APPROVALS
 # ======================================================================
 
-@app.get("/api/approvals")
-async def get_approvals():
+@app.get(
+    "/api/approvals"
+)
+async def api_approvals():
 
     return {
-        "pending": tools.approvals.get_pending(),
-        "count": len(
-            tools.approvals.get_pending()
-        ),
+        "approvals": approvals.get_pending()
     }
 
 
-@app.get("/api/approvals/{approval_id}")
-async def get_approval(
-    approval_id: int,
-):
-
-    approval = tools.approvals.get(
-        approval_id
-    )
-
-    if approval is None:
-
-        return JSONResponse(
-            {
-                "success": False,
-                "error": (
-                    f"Approval #{approval_id} "
-                    "does not exist."
-                ),
-            },
-            status_code=404,
-        )
-
-    return {
-        "success": True,
-        "approval": approval,
-    }
-
-
-@app.post("/api/approvals/{approval_id}/approve")
+@app.post(
+    "/api/approvals/{approval_id}/approve"
+)
 async def approve_action(
     approval_id: int,
-    reason: str = Form(""),
 ):
 
-    approval = tools.approvals.approve(
-        approval_id=approval_id,
+    result = approvals.approve(
+        approval_id,
         decided_by="Creator",
-        reason=reason,
     )
 
-    if approval is None:
-
+    if result is None:
         return JSONResponse(
             {
                 "success": False,
                 "error": (
-                    f"Approval #{approval_id} "
-                    "does not exist."
+                    "Approval not found."
                 ),
             },
             status_code=404,
@@ -530,33 +465,28 @@ async def approve_action(
 
     return {
         "success": True,
-        "message": (
-            f"Approval #{approval_id} approved."
-        ),
-        "approval": approval,
+        "approval": result,
     }
 
 
-@app.post("/api/approvals/{approval_id}/deny")
+@app.post(
+    "/api/approvals/{approval_id}/deny"
+)
 async def deny_action(
     approval_id: int,
-    reason: str = Form(""),
 ):
 
-    approval = tools.approvals.deny(
-        approval_id=approval_id,
+    result = approvals.deny(
+        approval_id,
         decided_by="Creator",
-        reason=reason,
     )
 
-    if approval is None:
-
+    if result is None:
         return JSONResponse(
             {
                 "success": False,
                 "error": (
-                    f"Approval #{approval_id} "
-                    "does not exist."
+                    "Approval not found."
                 ),
             },
             status_code=404,
@@ -564,18 +494,17 @@ async def deny_action(
 
     return {
         "success": True,
-        "message": (
-            f"Approval #{approval_id} denied."
-        ),
-        "approval": approval,
+        "approval": result,
     }
 
 
 # ======================================================================
-# TIME
+# WORLD
 # ======================================================================
 
-@app.post("/api/advance_time")
+@app.post(
+    "/api/advance_time"
+)
 async def advance_time():
 
     world.advance_time()
@@ -618,8 +547,6 @@ async def vault(
         {
             "request": request,
             "rooms": rooms,
-            "safety": creator_safety_status(),
-            "approvals": tools.approvals.get_pending(),
         },
     )
 
@@ -639,15 +566,13 @@ async def agent_page(
 ):
 
     if name not in SHEETS:
-
         return HTMLResponse(
             "No such agent",
             status_code=404,
         )
 
     status = (
-        memory
-        .get_all_agent_status()
+        memory.get_all_agent_status()
         .get(
             name,
             {},
@@ -660,10 +585,12 @@ async def agent_page(
 
     logs = []
 
-    for item in memory.get_logs(40):
-
-        if item.get("agent") == name:
-
+    for item in memory.get_logs(
+        40
+    ):
+        if item.get(
+            "agent"
+        ) == name:
             logs.append(
                 item.get(
                     "message",
@@ -675,7 +602,7 @@ async def agent_page(
 
     if name == "InfoFarmer":
 
-        for i, item in enumerate(
+        for index, item in enumerate(
             memory.data.get(
                 "knowledge",
                 [],
@@ -683,8 +610,7 @@ async def agent_page(
         ):
 
             if "id" not in item:
-
-                item["id"] = i + 1
+                item["id"] = index + 1
 
             if (
                 bool(archived)
@@ -695,8 +621,9 @@ async def agent_page(
                     )
                 )
             ):
-
-                notes.append(item)
+                notes.append(
+                    item
+                )
 
     return templates.TemplateResponse(
         "agent.html",
@@ -707,17 +634,17 @@ async def agent_page(
             "status": status,
             "logs": logs[:10],
             "notes": notes,
-            "safety": creator_safety_status(),
-            "approvals": tools.approvals.get_pending(),
         },
     )
 
 
 # ======================================================================
-# INFO FARMER NOTES
+# INFOFARMER NOTES
 # ======================================================================
 
-@app.post("/agent/InfoFarmer/note")
+@app.post(
+    "/agent/InfoFarmer/note"
+)
 async def note_action(
     note_id: int = Form(...),
     action: str = Form(...),
@@ -740,24 +667,25 @@ async def note_action(
             item.get("id") == note_id
             and action == "archive"
         ):
-
             item["archived"] = True
 
-        kept.append(item)
+        kept.append(
+            item
+        )
 
-    memory.data["knowledge"] = kept
+    memory.data[
+        "knowledge"
+    ] = kept
 
     memory.save()
 
     return HTMLResponse(
-        "<script>"
-        "location='/agent/InfoFarmer'"
-        "</script>"
+        "<script>location='/agent/InfoFarmer'</script>"
     )
 
 
 # ======================================================================
-# APPLICATION START
+# STARTUP
 # ======================================================================
 
 if __name__ == "__main__":
