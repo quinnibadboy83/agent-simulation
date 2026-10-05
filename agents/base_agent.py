@@ -2,59 +2,17 @@
 Base Agent
 ----------
 
-Common cognitive and operational foundation for all agents.
-
-Every specialised agent inherits from this class.
-
-Architecture:
-
-    Perceive
-        ↓
-    Remember
-        ↓
-    Think
-        ↓
-    Plan
-        ↓
-    Select Tool
-        ↓
-    ToolRegistry
-        ↓
-    Observe Result
-        ↓
-    Learn / Continue
-
-Important:
-
-    BaseAgent does NOT execute tools directly.
-
-    All tool execution passes through ToolRegistry so that:
-        - operating mode is enforced
-        - simulation/live restrictions are enforced
-        - protected actions require Creator approval
-        - approvals are tied to exact parameters
-        - execution is logged
+Common cognitive and operational foundation for every agent.
 """
 
 from typing import Any, Dict, List, Optional
 
+from core.cognitive_room import CognitiveRoom
 from core.memory import SharedMemory
 from core.tools import ToolRegistry
-from core.cognitive_room import CognitiveRoom
 
 
 class BaseAgent:
-    """
-    Common parent class for every autonomous agent.
-
-    Specialised agents should override or extend:
-        - think()
-        - perceive()
-        - plan()
-        - act()
-
-    They should NOT bypass ToolRegistry when executing tools.
-    """
 
     def __init__(
         self,
@@ -74,20 +32,12 @@ class BaseAgent:
         self.status = "idle"
         self.current_task = None
 
-        # ---------------------------------------------------------
-        # Private cognitive environment
-        # ---------------------------------------------------------
-
         self.cognitive_room = CognitiveRoom(
-            agent_name=self.name,
-            role=self.role,
-            description=self.description,
+            agent_name=name,
+            role=role,
+            description=description,
             identity=identity,
         )
-
-        # ---------------------------------------------------------
-        # Register initial public status
-        # ---------------------------------------------------------
 
         self._publish_status()
 
@@ -96,31 +46,27 @@ class BaseAgent:
             f"Agent initialised: {self.role}",
         )
 
-    # =============================================================
-    # COGNITIVE LIFECYCLE
-    # =============================================================
+    # ------------------------------------------------------------------
+    # Perception
+    # ------------------------------------------------------------------
 
-    def perceive(self) -> Dict[str, Any]:
-        """
-        Gather the information currently relevant to this agent.
-
-        This method is intentionally conservative.
-
-        It reads shared state and the agent's assigned tasks but does
-        not perform external actions.
-        """
+    def perceive(
+        self,
+    ) -> Dict[str, Any]:
 
         tasks = self.memory.get_tasks(
             assigned_to=self.name
         )
 
-        pending_tasks = [
+        pending = [
             task
             for task in tasks
-            if task.get("status") == "pending"
+            if task.get(
+                "status"
+            ) == "pending"
         ]
 
-        unread_messages = (
+        messages = (
             self.cognitive_room.unread_messages()
         )
 
@@ -128,120 +74,105 @@ class BaseAgent:
             "agent": self.name,
             "status": self.status,
             "current_task": self.current_task,
-            "pending_tasks": pending_tasks,
-            "unread_messages": unread_messages,
+            "pending_tasks": pending,
+            "unread_messages": messages,
         }
 
         self.cognitive_room.observe(
-            content=str(observation),
-            source="shared_memory",
+            str(observation),
+            "shared_memory",
         )
 
         return observation
+
+    # ------------------------------------------------------------------
+    # Memory
+    # ------------------------------------------------------------------
 
     def remember(
         self,
         content: str,
         category: str = "general",
-    ) -> Dict[str, Any]:
-        """
-        Store information in the agent's private cognitive memory.
-        """
-
+    ):
         return self.cognitive_room.remember(
-            content=content,
-            category=category,
+            content,
+            category,
         )
 
-    def think(self, input_text: str) -> str:
-        """
-        Basic reasoning layer.
+    # ------------------------------------------------------------------
+    # Reasoning
+    # ------------------------------------------------------------------
 
-        This is deliberately simple for now.
+    def think(
+        self,
+        input_text: str,
+    ) -> str:
 
-        Later this method becomes the common integration point for
-        an external/local reasoning model such as DeepSeek.
-
-        The model will produce reasoning/plans, but actual execution
-        will still be forced through ToolRegistry.
-        """
-
-        input_text = str(input_text or "").strip()
+        input_text = str(
+            input_text or ""
+        ).strip()
 
         if not input_text:
             return (
-                f"{self.name} has no new input to reason about."
+                f"{self.name} has no new "
+                "input to reason about."
             )
 
-        input_lower = input_text.lower()
-
-        # Record the incoming cognitive stimulus.
         self.cognitive_room.observe(
-            content=input_text,
-            source="input",
+            input_text,
+            "input",
         )
 
-        # Existing status/report behaviour is preserved.
-        if (
-            "status" in input_lower
-            or "report" in input_lower
-        ):
-            result = self.get_status_report()
+        lower = input_text.lower()
 
-            self.cognitive_room.think(
-                result,
-                kind="status_reasoning",
+        if (
+            "status" in lower
+            or "report" in lower
+        ):
+            result = (
+                self.get_status_report()
             )
 
-            return result
-
-        if "help" in input_lower:
+        elif "help" in lower:
             result = self.get_help()
 
-            self.cognitive_room.think(
-                result,
-                kind="help_reasoning",
+        else:
+            self.remember(
+                input_text,
+                "input",
             )
 
-            return result
-
-        # Remember the request.
-        self.remember(
-            input_text,
-            category="input",
-        )
-
-        result = (
-            f"{self.name} received: "
-            f"'{input_text}'. "
-            "Awaiting clearer orders from Boss."
-        )
+            result = (
+                f"{self.name} received: "
+                f"'{input_text}'. "
+                "Awaiting clearer orders."
+            )
 
         self.cognitive_room.think(
             result,
-            kind="reasoning",
+            "reasoning",
         )
 
         return result
 
+    # ------------------------------------------------------------------
+    # Planning
+    # ------------------------------------------------------------------
+
     def plan(
         self,
         objective: str,
-        steps: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        Create a private execution plan.
+        steps: Optional[
+            List[str]
+        ] = None,
+    ):
 
-        No external action occurs here.
-
-        A later AI brain can replace the simple step input with
-        generated plans.
-        """
-
-        objective = str(objective or "").strip()
+        objective = str(
+            objective or ""
+        ).strip()
 
         if not objective:
-            self.cognitive_room.clear_objective()
+            self.clear_objective()
             return []
 
         self.cognitive_room.set_objective(
@@ -264,27 +195,25 @@ class BaseAgent:
         )
 
         self.cognitive_room.think(
-            f"Created plan for objective: {objective}",
-            kind="planning",
+            f"Created plan for: {objective}",
+            "planning",
         )
+
+        self._publish_status()
 
         return list(
             self.cognitive_room.plan
         )
 
+    # ------------------------------------------------------------------
+    # Action
+    # ------------------------------------------------------------------
+
     def act(
         self,
         tool_name: str,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
-        """
-        Execute a tool through the central ToolRegistry.
-
-        This method intentionally contains no direct function
-        execution.
-
-        ToolRegistry remains the security boundary.
-        """
 
         self.update_status(
             "acting"
@@ -296,20 +225,24 @@ class BaseAgent:
         )
 
         self.observe_result(
-            tool_name=tool_name,
-            result=result,
+            tool_name,
+            result,
         )
 
-        if result.get("success"):
+        if result.get(
+            "success"
+        ):
             self.update_status(
                 "working"
             )
+
         elif result.get(
             "requires_approval"
         ):
             self.update_status(
                 "awaiting_approval"
             )
+
         else:
             self.update_status(
                 "working"
@@ -317,40 +250,43 @@ class BaseAgent:
 
         return result
 
+    def execute_tool(
+        self,
+        tool_name: str,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+
+        return self.tools.execute(
+            tool_name,
+            agent=self.name,
+            **kwargs,
+        )
+
+    # ------------------------------------------------------------------
+    # Observation / learning
+    # ------------------------------------------------------------------
+
     def observe_result(
         self,
         tool_name: str,
         result: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """
-        Feed a tool result back into the agent's private cognitive room.
-        """
-
-        observation = {
-            "tool": tool_name,
-            "result": result,
-        }
+    ) -> None:
 
         self.cognitive_room.observe(
-            content=str(observation),
-            source=f"tool:{tool_name}",
+            str(result),
+            f"tool:{tool_name}",
         )
 
-        if result.get("success"):
+        if result.get(
+            "success"
+        ):
             self.remember(
                 (
-                    f"Tool '{tool_name}' succeeded. "
+                    f"Tool '{tool_name}' "
+                    "succeeded. "
                     f"Result: {result.get('result')}"
                 ),
-                category="tool_result",
-            )
-
-            self.cognitive_room.think(
-                (
-                    f"Observed successful execution of "
-                    f"'{tool_name}'."
-                ),
-                kind="observation",
+                "tool_result",
             )
 
         elif result.get(
@@ -358,53 +294,29 @@ class BaseAgent:
         ):
             self.remember(
                 (
-                    f"Tool '{tool_name}' requires Creator "
-                    f"approval. Result: {result}"
+                    f"Tool '{tool_name}' "
+                    "requires Creator approval."
                 ),
-                category="approval",
-            )
-
-            self.cognitive_room.think(
-                (
-                    f"Execution of '{tool_name}' is waiting "
-                    "for Creator approval."
-                ),
-                kind="approval_wait",
+                "approval",
             )
 
         else:
             self.remember(
                 (
-                    f"Tool '{tool_name}' failed or was blocked. "
-                    f"Result: {result}"
+                    f"Tool '{tool_name}' "
+                    f"failed or was blocked: "
+                    f"{result}"
                 ),
-                category="tool_error",
+                "tool_error",
             )
 
-            self.cognitive_room.think(
-                (
-                    f"Observed failure or blocking of "
-                    f"'{tool_name}'."
-                ),
-                kind="error_analysis",
-            )
+    # ------------------------------------------------------------------
+    # Autonomous cycle
+    # ------------------------------------------------------------------
 
-        return observation
-
-    def run_cycle(self) -> Dict[str, Any]:
-        """
-        Perform one autonomous cognitive cycle.
-
-        This is the common loop that specialised agents can later
-        customise.
-
-        Current implementation is deliberately non-destructive:
-        it perceives and reasons but does not invent consequential
-        actions.
-
-        Future AI-driven agents can use the resulting cognitive state
-        to select tools, while ToolRegistry remains the final gate.
-        """
+    def run_cycle(
+        self,
+    ) -> Dict[str, Any]:
 
         self.update_status(
             "perceiving"
@@ -434,120 +346,73 @@ class BaseAgent:
             ),
         }
 
-    # =============================================================
-    # TOOL EXECUTION
-    # =============================================================
-
-    def execute_tool(
-        self,
-        tool_name: str,
-        **kwargs,
-    ) -> Dict[str, Any]:
-        """
-        Execute a registered tool.
-
-        All execution is delegated to ToolRegistry.
-
-        The agent therefore cannot bypass:
-            - simulation mode
-            - live mode
-            - Creator approval
-            - approval parameter matching
-            - execution logging
-        """
-
-        return self.tools.execute(
-            tool_name,
-            agent=self.name,
-            **kwargs,
-        )
-
-    # =============================================================
-    # TASK MANAGEMENT
-    # =============================================================
+    # ------------------------------------------------------------------
+    # Tasks
+    # ------------------------------------------------------------------
 
     def get_current_tasks(
         self,
-    ) -> List[Dict[str, Any]]:
-        """
-        Return all tasks assigned to this agent.
-        """
-
+    ):
         return self.memory.get_tasks(
             assigned_to=self.name
         )
 
     def get_pending_tasks(
         self,
-    ) -> List[Dict[str, Any]]:
-        """
-        Return pending tasks assigned to this agent.
-        """
-
-        tasks = self.get_current_tasks()
-
+    ):
         return [
             task
-            for task in tasks
-            if task.get("status") == "pending"
+            for task in self.get_current_tasks()
+            if task.get(
+                "status"
+            ) == "pending"
         ]
 
     def set_current_task(
         self,
-        task: Optional[Dict[str, Any]],
+        task: Optional[
+            Dict[str, Any]
+        ],
     ) -> None:
-        """
-        Set the task currently being worked on.
-        """
 
         self.current_task = task
 
         if task is None:
-            self.cognitive_room.clear_objective()
+            self.clear_objective()
             return
 
-        objective = task.get(
-            "description"
-        ) or task.get(
-            "title",
-            "",
+        objective = (
+            task.get("description")
+            or task.get("title", "")
         )
 
         if objective:
-            self.cognitive_room.set_objective(
+            self.set_objective(
                 objective
             )
 
-        self.cognitive_room.remember(
+        self.remember(
             str(task),
-            category="task",
+            "task",
         )
 
-    # =============================================================
-    # STATUS / COMMUNICATION
-    # =============================================================
+    # ------------------------------------------------------------------
+    # Status
+    # ------------------------------------------------------------------
 
-    def get_status_report(self) -> str:
-        """
-        Generate a human-readable status report.
-        """
+    def get_status_report(
+        self,
+    ) -> str:
 
         status = self.memory.get_agent_status(
             self.name
         )
 
-        tasks = self.memory.get_tasks(
-            assigned_to=self.name
-        )
-
-        pending = [
-            task
-            for task in tasks
-            if task.get("status") == "pending"
-        ]
+        pending = self.get_pending_tasks()
 
         report = (
-            f"**{self.name}** ({self.role})\n"
+            f"**{self.name}** "
+            f"({self.role})\n"
         )
 
         report += (
@@ -563,7 +428,7 @@ class BaseAgent:
         if self.current_task:
             report += (
                 "Current task: "
-                f"{self.current_task.get('title', 'unknown')}\n"
+                f"{self.current_task.get('title')}\n"
             )
 
         if pending:
@@ -574,74 +439,64 @@ class BaseAgent:
 
         return report
 
-    def get_help(self) -> str:
-        """
-        Return the agent's basic capabilities.
-        """
-
+    def get_help(
+        self,
+    ) -> str:
         return (
-            f"I am {self.name}, the {self.role}. "
-            "I can perceive tasks, maintain private cognitive "
-            "state, reason about objectives, create plans, "
-            "use registered tools, and observe their results."
+            f"I am {self.name}, "
+            f"the {self.role}. "
+            "I can perceive tasks, maintain "
+            "private cognitive state, reason, "
+            "plan, use registered tools and "
+            "observe results."
         )
+
+    # ------------------------------------------------------------------
+    # Communication
+    # ------------------------------------------------------------------
 
     def receive_message(
         self,
         sender: str,
         content: str,
-    ) -> Dict[str, Any]:
-        """
-        Receive a private cognitive message.
-
-        Messages are stored in the agent's CognitiveRoom rather
-        than being automatically placed into the shared world.
-        """
-
-        message = self.cognitive_room.receive_message(
-            sender=sender,
-            content=content,
+    ):
+        message = (
+            self.cognitive_room.receive_message(
+                sender,
+                content,
+            )
         )
 
         self.cognitive_room.think(
             (
-                f"Received message from {sender}: "
-                f"{content}"
+                f"Received message from "
+                f"{sender}: {content}"
             ),
-            kind="communication",
+            "communication",
         )
 
         return message
 
     def get_unread_messages(
         self,
-    ) -> List[Dict[str, Any]]:
-        """
-        Return unread private messages.
-        """
-
-        return self.cognitive_room.unread_messages()
+    ):
+        return (
+            self.cognitive_room.unread_messages()
+        )
 
     def mark_messages_read(
         self,
-    ) -> None:
-        """
-        Mark all private messages as read.
-        """
-
+    ):
         self.cognitive_room.mark_messages_read()
 
-    # =============================================================
-    # STATUS CONTROL
-    # =============================================================
+    # ------------------------------------------------------------------
+    # State
+    # ------------------------------------------------------------------
 
     def update_status(
         self,
         new_status: str,
     ) -> None:
-        """
-        Update both local and shared agent status.
-        """
 
         self.status = new_status
 
@@ -655,10 +510,6 @@ class BaseAgent:
     def _publish_status(
         self,
     ) -> None:
-        """
-        Publish public status without exposing the entire private
-        cognitive room.
-        """
 
         self.memory.set_agent_status(
             self.name,
@@ -666,36 +517,24 @@ class BaseAgent:
                 "role": self.role,
                 "status": self.status,
                 "description": self.description,
-                "current_task": (
-                    self.current_task
-                ),
+                "current_task": self.current_task,
                 "objective": (
                     self.cognitive_room.objective
                 ),
             },
         )
 
-    # =============================================================
-    # COGNITIVE STATE
-    # =============================================================
-
     def get_cognitive_state(
         self,
-    ) -> Dict[str, Any]:
-        """
-        Return a snapshot of the agent's private cognitive state.
-        """
-
-        return self.cognitive_room.snapshot()
+    ):
+        return (
+            self.cognitive_room.snapshot()
+        )
 
     def set_objective(
         self,
         objective: str,
-    ) -> None:
-        """
-        Set the agent's current cognitive objective.
-        """
-
+    ):
         self.cognitive_room.set_objective(
             objective
         )
@@ -704,14 +543,7 @@ class BaseAgent:
 
     def clear_objective(
         self,
-    ) -> None:
-        """
-        Clear the current cognitive objective.
-        """
-
+    ):
         self.cognitive_room.clear_objective()
 
         self._publish_status()
-
-
-
