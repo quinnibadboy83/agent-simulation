@@ -14,6 +14,7 @@
         <header class="pip-header">
             <div class="logo">◈ AGENT SIM</div>
             <div class="status-bar">
+                <a href="/vault">VAULT</a>
                 <span>DAY <span id="day">{{ world.day }}</span></span>
                 <span id="time">{{ world.time }}</span>
                 <span class="money">$<span id="balance">{{ "%.2f"|format(balance) }}</span></span>
@@ -32,7 +33,7 @@
                 <div class="panel">
                     <div class="panel-title">BOSS TERMINAL</div>
                     <div id="response-area" class="response-box">
-                        Type orders below. Try: <strong>status</strong> or <strong>farm crypto</strong> or <strong>help</strong>
+                        Type orders below. Try: <strong>status</strong> or <strong>help</strong>
                     </div>
                     <form id="command-form" class="command-form">
                         <input type="text" id="command-input" placeholder="Enter order for Boss..." autocomplete="off" enterkeyhint="send">
@@ -52,11 +53,11 @@
                     <div class="panel-title">ACTIVE AGENTS</div>
                     <div id="agents-list">
                         {% for name, info in agents.items() %}
-                        <div class="agent-card">
+                        <a class="agent-card" href="/agent/{{ name }}">
                             <div class="agent-name">{{ name }}</div>
                             <div class="agent-role">{{ info.role }}</div>
                             <div class="agent-status">{{ info.status }}</div>
-                        </div>
+                        </a>
                         {% endfor %}
                     </div>
                 </div>
@@ -106,8 +107,8 @@
         </main>
 
         <footer class="pip-footer">
+            <a href="/vault"><button type="button" class="footer-btn">OPEN VAULT</button></a>
             <button id="advance-time" class="footer-btn">ADVANCE TIME</button>
-            <span class="module-label">MODULE 1 // CORE</span>
         </footer>
     </div>
 
