@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ name }}</title>
+  <style>
+    body { margin:0; background:#10160f; color:#d7e7c8; font-family:sans-serif; }
+    a, button { color:#b6f27c; }
+    header, section { padding:12px; border-bottom:1px solid #2c4226; }
+    .stat { display:flex; justify-content:space-between; margin:4px 0; }
+    .note { border:1px solid #3d5a32; padding:8px; margin:8px 0; }
+    button { background:#24361e; border:1px solid #8dff6a; padding:6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/vault">Vault</a>
+    <div>{{ name }} / {{ sheet.role }}</div>
+    <div>{{ status }}</div>
+  </header>
+  <section>
+    <p>{{ sheet.voice }}</p>
+    {% for label, value in sheet.stats.items() %}
+    <div class="stat"><span>{{ label }}</span><b>{{ value }}</b></div>
+    {% endfor %}
+    <p>Trait: {{ sheet.trait }}</p>
+  </section>
+  <section>
+    <b>Recent logs</b>
+    {% for log in logs %}
+    <div class="note">{{ log }}</div>
+    {% else %}
+    <p>No logs yet.</p>
+    {% endfor %}
+  </section>
+  {% if name == "InfoFarmer" %}
+  <section>
+    <b>Notes</b>
+    {% for note in notes %}
+    <div class="note">
+      <div>{{ note.content }}</div>
+      <form method="post" action="/agent/InfoFarmer/note">
+        <input type="hidden" name="note_id" value="{{ note.id }}">
+        <button name="action" value="archive">Archive</button>
+        <button name="action" value="delete">Delete</button>
+      </form>
+    </div>
+    {% else %}
+    <p>No active notes.</p>
+    {% endfor %}
+    <a href="/agent/InfoFarmer?archived=1">Show archive</a>
+  </section>
+  {% endif %}
+</body>
+</html>
