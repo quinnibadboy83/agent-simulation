@@ -1,165 +1,375 @@
 """
-Cognitive Room
----------------
-Private working environment for an autonomous agent.
+Creator Approval Gate
+---------------------
 
-The room separates an agent's private cognitive state from the
-shared world/blackboard used by the rest of the simulation.
+Controls consequential actions in REAL mode.
+
+Agents may:
+
+    - research
+    - reason
+    - plan
+    - prepare
+    - communicate internally
+
+Protected consequential actions require an explicit Creator
+approval before execution.
+
+Approvals are:
+
+    - persistent
+    - tied to an agent
+    - tied to a specific action
+    - tied to exact parameters
+    - single-use
 """
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
-class CognitiveRoom:
+class ApprovalGate:
     def __init__(
         self,
-        agent_name: str,
-        role: str,
-        description: str = "",
-        identity: Optional[str] = None,
+        memory,
     ):
-        self.agent_name = agent_name
-        self.role = role
-        self.description = description
-        self.identity = identity or f"You are {agent_name}, a {role}."
+        self.memory = memory
 
-        self.objective: Optional[str] = None
-        self.status = "idle"
+        if "approvals" not in self.memory.data:
+            self.memory.data[
+                "approvals"
+            ] = []
 
-        self.memory: List[Dict[str, Any]] = []
-        self.thoughts: List[Dict[str, Any]] = []
-        self.messages: List[Dict[str, Any]] = []
-        self.observations: List[Dict[str, Any]] = []
-        self.plan: List[Dict[str, Any]] = []
+            self.memory.save()
 
-    def set_objective(self, objective: str) -> None:
-        self.objective = objective
-        self.status = "working"
-        self._record(
-            self.thoughts,
-            "objective",
-            objective,
+        self._normalise()
+
+    # ------------------------------------------------------------------
+    # Normalisation
+    # ------------------------------------------------------------------
+
+    def _normalise(self) -> None:
+        for item in self.memory.data.get(
+            "approvals",
+            [],
+        ):
+            item.setdefault(
+                "status",
+                "pending",
+            )
+
+            item.setdefault(
+                "created_at",
+                item.get(
+                    "timestamp",
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+
+            item.setdefault(
+                "updated_at",
+                item.get(
+                    "created_at"
+                ),
+            )
+
+            item.setdefault(
+                "decision",
+                None,
+            )
+
+            item.setdefault(
+                "decided_by",
+                None,
+            )
+
+            item.setdefault(
+                "decision_reason",
+                None,
+            )
+
+    # ------------------------------------------------------------------
+    # Create request
+    # ------------------------------------------------------------------
+
+    def request(
+        self,
+        action: str,
+        description: str,
+        parameters: Optional[
+            Dict[str, Any]
+        ] = None,
+        agent: str = "Unknown",
+        plan: Optional[
+            List[str]
+        ] = None,
+        risk: str = "medium",
+    ) -> Dict[str, Any]:
+
+        approvals = self.memory.data.setdefault(
+            "approvals",
+            [],
         )
 
-    def clear_objective(self) -> None:
-        self.objective = None
-        self.status = "idle"
-        self.plan = []
+        next_id = 1
 
-    def remember(
-        self,
-        content: str,
-        category: str = "general",
-    ) -> Dict[str, Any]:
-        item = self._record(
-            self.memory,
-            category,
-            content,
-        )
-        return item
+        if approvals:
+            next_id = max(
+                int(
+                    item.get(
+                        "id",
+                        0,
+                    )
+                )
+                for item in approvals
+            ) + 1
 
-    def observe(
-        self,
-        content: str,
-        source: str = "world",
-    ) -> Dict[str, Any]:
+        now = datetime.utcnow().isoformat()
+
         item = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "source": source,
-            "content": content,
+            "id": next_id,
+            "action": action,
+            "description": description,
+            "parameters": parameters or {},
+            "agent": agent,
+            "plan": plan or [],
+            "risk": risk,
+            "status": "pending",
+            "decision": None,
+            "decided_by": None,
+            "decision_reason": None,
+            "created_at": now,
+            "updated_at": now,
         }
-        self.observations.append(item)
-        self.observations = self.observations[-50:]
-        return item
 
-    def think(
-        self,
-        content: str,
-        kind: str = "reasoning",
-    ) -> Dict[str, Any]:
-        item = self._record(
-            self.thoughts,
-            kind,
-            content,
+        approvals.append(
+            item
         )
+
+        self.memory.data[
+            "approvals"
+        ] = approvals[-200:]
+
+        self.memory.log(
+            "ApprovalGate",
+            (
+                f"Approval requested "
+                f"#{next_id}: {action} "
+                f"by {agent}"
+            ),
+        )
+
+        self.memory.save()
+
         return item
 
-    def receive_message(
+    # ------------------------------------------------------------------
+    # Query
+    # ------------------------------------------------------------------
+
+    def get_pending(
         self,
-        sender: str,
-        content: str,
-    ) -> Dict[str, Any]:
-        item = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "sender": sender,
-            "content": content,
-            "read": False,
-        }
-        self.messages.append(item)
-        self.messages = self.messages[-100:]
-        return item
-
-    def unread_messages(self) -> List[Dict[str, Any]]:
+    ) -> List[Dict[str, Any]]:
         return [
-            message
-            for message in self.messages
-            if not message.get("read", False)
+            item
+            for item in self.memory.data.get(
+                "approvals",
+                [],
+            )
+            if item.get(
+                "status"
+            ) == "pending"
         ]
 
-    def mark_messages_read(self) -> None:
-        for message in self.messages:
-            message["read"] = True
-
-    def set_plan(self, steps: List[str]) -> None:
-        self.plan = [
-            {
-                "step": index,
-                "description": step,
-                "status": "pending",
-            }
-            for index, step in enumerate(steps, start=1)
-        ]
-
-    def complete_plan_step(self, step: int) -> bool:
-        for item in self.plan:
-            if item["step"] == step:
-                item["status"] = "completed"
-                return True
-        return False
-
-    def snapshot(self) -> Dict[str, Any]:
-        return {
-            "agent_name": self.agent_name,
-            "role": self.role,
-            "description": self.description,
-            "identity": self.identity,
-            "objective": self.objective,
-            "status": self.status,
-            "memory": self.memory[-50:],
-            "thoughts": self.thoughts[-30:],
-            "messages": self.messages[-30:],
-            "observations": self.observations[-30:],
-            "plan": self.plan,
-        }
-
-    def _record(
+    def list_pending(
         self,
-        collection: List[Dict[str, Any]],
-        kind: str,
-        content: str,
-    ) -> Dict[str, Any]:
-        item = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "kind": kind,
-            "content": content,
-        }
+    ) -> List[Dict[str, Any]]:
+        return self.get_pending()
 
-        collection.append(item)
+    def get(
+        self,
+        approval_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        for item in self.memory.data.get(
+            "approvals",
+            [],
+        ):
+            if int(
+                item.get(
+                    "id",
+                    0,
+                )
+            ) == int(
+                approval_id
+            ):
+                return item
 
-        if collection is self.thoughts:
-            del collection[:-100]
-        elif collection is self.memory:
-            del collection[:-200]
+        return None
+
+    # ------------------------------------------------------------------
+    # Decisions
+    # ------------------------------------------------------------------
+
+    def approve(
+        self,
+        approval_id: int,
+        decided_by: str = "Creator",
+        reason: str = "",
+    ) -> Optional[
+        Dict[str, Any]
+    ]:
+        item = self.get(
+            approval_id
+        )
+
+        if item is None:
+            return None
+
+        if item.get(
+            "status"
+        ) != "pending":
+            return item
+
+        item["status"] = "approved"
+        item["decision"] = "approved"
+        item["decided_by"] = decided_by
+        item["decision_reason"] = reason
+        item["updated_at"] = (
+            datetime.utcnow().isoformat()
+        )
+
+        self.memory.log(
+            "Creator",
+            (
+                f"APPROVED action "
+                f"#{approval_id}: "
+                f"{item.get('action')}"
+            ),
+        )
+
+        self.memory.save()
 
         return item
+
+    def deny(
+        self,
+        approval_id: int,
+        decided_by: str = "Creator",
+        reason: str = "",
+    ) -> Optional[
+        Dict[str, Any]
+    ]:
+        item = self.get(
+            approval_id
+        )
+
+        if item is None:
+            return None
+
+        if item.get(
+            "status"
+        ) != "pending":
+            return item
+
+        item["status"] = "denied"
+        item["decision"] = "denied"
+        item["decided_by"] = decided_by
+        item["decision_reason"] = reason
+        item["updated_at"] = (
+            datetime.utcnow().isoformat()
+        )
+
+        self.memory.log(
+            "Creator",
+            (
+                f"DENIED action "
+                f"#{approval_id}: "
+                f"{item.get('action')}"
+            ),
+        )
+
+        self.memory.save()
+
+        return item
+
+    # Backwards-compatible interface.
+    def decide(
+        self,
+        approval_id: int,
+        allow: bool,
+    ) -> str:
+        if allow:
+            result = self.approve(
+                approval_id
+            )
+        else:
+            result = self.deny(
+                approval_id
+            )
+
+        if result is None:
+            return (
+                f"No approval #{approval_id}."
+            )
+
+        return (
+            f"Approval #{approval_id} "
+            f"{result.get('status')}."
+        )
+
+    # ------------------------------------------------------------------
+    # Single-use execution
+    # ------------------------------------------------------------------
+
+    def consume_approval(
+        self,
+        approval_id: int,
+    ) -> bool:
+        item = self.get(
+            approval_id
+        )
+
+        if item is None:
+            return False
+
+        if item.get(
+            "status"
+        ) != "approved":
+            return False
+
+        item["status"] = "consumed"
+        item["updated_at"] = (
+            datetime.utcnow().isoformat()
+        )
+
+        self.memory.log(
+            "ApprovalGate",
+            (
+                f"Consumed approval "
+                f"#{approval_id}"
+            ),
+        )
+
+        self.memory.save()
+
+        return True
+
+    def reject_execution(
+        self,
+        approval_id: int,
+    ) -> bool:
+        item = self.get(
+            approval_id
+        )
+
+        if item is None:
+            return False
+
+        item["status"] = "execution_failed"
+        item["updated_at"] = (
+            datetime.utcnow().isoformat()
+        )
+
+        self.memory.save()
+
+        return True
