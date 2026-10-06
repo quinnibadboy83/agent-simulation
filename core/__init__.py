@@ -1,9 +1,8 @@
-
 """
 Core simulation package.
 
 Provides shared memory, world state, cognitive rooms,
-approval control, tools, economy, and research services.
+approval control, tools, economy, research, and orchestration.
 """
 
 from .memory import SharedMemory
@@ -13,6 +12,7 @@ from .approvals import ApprovalGate
 from .tools import ToolRegistry, create_default_tools
 from .economy import Economy
 from .research import WebResearch
+from .orchestrator import Orchestrator
 
 __all__ = [
     "SharedMemory",
@@ -23,4 +23,5 @@ __all__ = [
     "create_default_tools",
     "Economy",
     "WebResearch",
+    "Orchestrator",
 ]
