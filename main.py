@@ -2,9 +2,6 @@
 Agent Simulation
 ----------------
 Main FastAPI application.
-
-Creator commands enter through Boss.
-Boss can delegate work to the other registered agents.
 """
 
 from pathlib import Path
@@ -40,9 +37,11 @@ app = FastAPI(
     version="2.0.0",
 )
 
-
 BASE_DIR = Path(__file__).resolve().parent
-TEMPLATES_DIR = BASE_DIR / "ui" / "templates"
+
+TEMPLATES_DIR = (
+    BASE_DIR / "ui" / "templates"
+)
 
 templates = Jinja2Templates(
     directory=str(TEMPLATES_DIR)
@@ -50,7 +49,7 @@ templates = Jinja2Templates(
 
 
 # ============================================================
-# CORE SYSTEMS
+# CORE SERVICES
 # ============================================================
 
 memory = SharedMemory()
@@ -106,6 +105,17 @@ agents = {
 
 
 # ============================================================
+# CONNECT AGENTS TO BOSS
+# ============================================================
+
+# Boss is the Creator-facing coordinator.
+# Give Boss access to all specialist agents.
+boss.register_agents(
+    agents
+)
+
+
+# ============================================================
 # ORCHESTRATOR
 # ============================================================
 
@@ -123,66 +133,103 @@ orchestrator = Orchestrator(
 # ============================================================
 
 def serialise(value: Any) -> Any:
-    """
-    Convert objects returned by agents/tools into JSON-safe data.
-    """
 
     if value is None:
         return None
 
-    if isinstance(value, (str, int, float, bool)):
+    if isinstance(
+        value,
+        (
+            str,
+            int,
+            float,
+            bool,
+        ),
+    ):
         return value
 
     if isinstance(value, dict):
+
         return {
             str(key): serialise(item)
             for key, item in value.items()
         }
 
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(
+        value,
+        (
+            list,
+            tuple,
+            set,
+        ),
+    ):
+
         return [
             serialise(item)
             for item in value
         ]
 
-    if hasattr(value, "model_dump"):
+    if hasattr(
+        value,
+        "model_dump",
+    ):
+
         try:
+
             return serialise(
                 value.model_dump()
             )
+
         except Exception:
             pass
 
-    if hasattr(value, "dict"):
+    if hasattr(
+        value,
+        "dict",
+    ):
+
         try:
+
             return serialise(
                 value.dict()
             )
+
         except Exception:
             pass
 
-    if hasattr(value, "__dict__"):
+    if hasattr(
+        value,
+        "__dict__",
+    ):
+
         try:
+
             return serialise(
                 vars(value)
             )
+
         except Exception:
             pass
 
     return str(value)
 
 
-def readable_response(value: Any) -> str:
-    """
-    Convert an agent response into text that the dashboard can display.
-    """
+def readable_response(
+    value: Any,
+) -> str:
 
     value = serialise(value)
 
-    if isinstance(value, str):
+    if isinstance(
+        value,
+        str,
+    ):
         return value
 
-    if isinstance(value, dict):
+    if isinstance(
+        value,
+        dict,
+    ):
 
         for key in (
             "response",
@@ -191,31 +238,38 @@ def readable_response(value: Any) -> str:
             "output",
             "content",
         ):
+
             item = value.get(key)
 
-            if isinstance(item, str):
+            if isinstance(
+                item,
+                str,
+            ):
                 return item
 
         if "result" in value:
 
-            result = value["result"]
-
-            if isinstance(result, str):
-                return result
-
-            return readable_response(result)
+            return readable_response(
+                value["result"]
+            )
 
         if "error" in value:
-            return f"ERROR: {value['error']}"
+
+            return (
+                f"ERROR: {value['error']}"
+            )
 
         try:
+
             return json.dumps(
                 value,
                 indent=2,
                 ensure_ascii=False,
                 default=str,
             )
+
         except Exception:
+
             return str(value)
 
     return str(value)
@@ -224,11 +278,13 @@ def readable_response(value: Any) -> str:
 def current_mode() -> str:
 
     try:
+
         return economy.get_mode()
 
     except Exception:
 
         try:
+
             state = world.state
 
             return state.get(
@@ -237,12 +293,16 @@ def current_mode() -> str:
             )
 
         except Exception:
+
             return "simulation"
 
 
-def get_agent_status(agent: Any) -> Dict[str, Any]:
+def get_agent_status(
+    agent: Any,
+) -> Dict[str, Any]:
 
     try:
+
         return serialise(
             agent.get_status_report()
         )
@@ -265,7 +325,10 @@ def all_agent_status() -> Dict[str, Any]:
     result = {}
 
     for name, agent in agents.items():
-        result[name] = get_agent_status(agent)
+
+        result[name] = get_agent_status(
+            agent
+        )
 
     return result
 
@@ -287,7 +350,17 @@ async def startup_event():
         memory.log(
             "System",
             "Agents registered: "
-            + ", ".join(agents.keys()),
+            + ", ".join(
+                agents.keys()
+            ),
+        )
+
+        memory.log(
+            "System",
+            "Boss connected to specialist agents: "
+            + ", ".join(
+                boss.agents.keys()
+            ),
         )
 
     except Exception:
@@ -302,7 +375,9 @@ async def startup_event():
     "/",
     response_class=HTMLResponse,
 )
-async def home(request: Request):
+async def home(
+    request: Request,
+):
 
     try:
 
@@ -352,10 +427,12 @@ async def home(request: Request):
 
 @app.post("/command")
 async def send_command(
-    command: str = Form(...)
+    command: str = Form(...),
 ):
 
-    command = (command or "").strip()
+    command = (
+        command or ""
+    ).strip()
 
     if not command:
 
@@ -366,15 +443,13 @@ async def send_command(
 
     try:
 
-        # ----------------------------------------------------
-        # Creator commands go directly to Boss.
-        # ----------------------------------------------------
-
         result = boss.process_order(
             command
         )
 
-        result = serialise(result)
+        result = serialise(
+            result
+        )
 
         response = readable_response(
             result
@@ -437,6 +512,9 @@ async def health():
         "agents": list(
             agents.keys()
         ),
+        "boss_agents": list(
+            boss.agents.keys()
+        ),
         "mode": current_mode(),
     }
 
@@ -456,6 +534,9 @@ async def api_status():
         "agents": all_agent_status(),
         "agent_names": list(
             agents.keys()
+        ),
+        "boss_agents": list(
+            boss.agents.keys()
         ),
         "balance": memory.get_balance(
             "Banker"
@@ -499,10 +580,12 @@ async def api_agents():
 
 @app.get("/api/agents/{name}")
 async def api_agent(
-    name: str
+    name: str,
 ):
 
-    agent = agents.get(name)
+    agent = agents.get(
+        name
+    )
 
     if agent is None:
 
@@ -513,15 +596,21 @@ async def api_agent(
             ),
         )
 
-    return get_agent_status(agent)
+    return get_agent_status(
+        agent
+    )
 
 
-@app.get("/api/agents/{name}/cognitive")
+@app.get(
+    "/api/agents/{name}/cognitive"
+)
 async def api_agent_cognitive(
-    name: str
+    name: str,
 ):
 
-    agent = agents.get(name)
+    agent = agents.get(
+        name
+    )
 
     if agent is None:
 
@@ -585,7 +674,9 @@ async def api_orchestrator():
     )
 
 
-@app.post("/api/orchestrator/start")
+@app.post(
+    "/api/orchestrator/start"
+)
 async def api_orchestrator_start():
 
     try:
@@ -610,7 +701,9 @@ async def api_orchestrator_start():
         )
 
 
-@app.post("/api/orchestrator/stop")
+@app.post(
+    "/api/orchestrator/stop"
+)
 async def api_orchestrator_stop():
 
     try:
@@ -635,7 +728,9 @@ async def api_orchestrator_stop():
         )
 
 
-@app.post("/api/orchestrator/cycle")
+@app.post(
+    "/api/orchestrator/cycle"
+)
 async def api_orchestrator_cycle():
 
     try:
@@ -654,11 +749,13 @@ async def api_orchestrator_cycle():
         error_text = traceback.format_exc()
 
         try:
+
             memory.log(
                 "System",
                 error_text,
                 level="error",
             )
+
         except Exception:
             pass
 
@@ -672,7 +769,9 @@ async def api_orchestrator_cycle():
         )
 
 
-@app.post("/api/orchestrator/task")
+@app.post(
+    "/api/orchestrator/task"
+)
 async def api_orchestrator_task(
     agent: str = Form(...),
     title: str = Form(...),
@@ -708,7 +807,9 @@ async def api_orchestrator_task(
         )
 
 
-@app.post("/api/orchestrator/broadcast")
+@app.post(
+    "/api/orchestrator/broadcast"
+)
 async def api_orchestrator_broadcast(
     message: str = Form(...),
     sender: str = Form("Creator"),
@@ -762,7 +863,7 @@ async def api_get_mode():
 
 @app.post("/api/mode")
 async def api_set_mode(
-    mode: str = Form(...)
+    mode: str = Form(...),
 ):
 
     requested = (
@@ -788,9 +889,6 @@ async def api_set_mode(
             status_code=400,
         )
 
-    # Real mode is deliberately blocked here.
-    # A future authenticated Creator control will
-    # be required before consequential live actions.
     if requested == "real":
 
         return JSONResponse(
@@ -886,7 +984,7 @@ async def api_approvals():
     "/api/approvals/{approval_id}/approve"
 )
 async def approve_approval(
-    approval_id: str
+    approval_id: str,
 ):
 
     try:
@@ -933,7 +1031,7 @@ async def approve_approval(
     "/api/approvals/{approval_id}/deny"
 )
 async def deny_approval(
-    approval_id: str
+    approval_id: str,
 ):
 
     try:
@@ -1028,7 +1126,9 @@ async def api_economy():
     )
 
 
-@app.get("/api/economy/vault")
+@app.get(
+    "/api/economy/vault"
+)
 async def api_economy_vault():
 
     return {
@@ -1051,7 +1151,9 @@ async def api_economy_vault():
 # INFOFARMER NOTES
 # ============================================================
 
-@app.post("/agent/InfoFarmer/note")
+@app.post(
+    "/agent/InfoFarmer/note"
+)
 async def note_action(
     note_id: int = Form(...),
     action: str = Form(...),
@@ -1074,6 +1176,7 @@ async def note_action(
             item.get("id") == note_id
             and action == "archive"
         ):
+
             item["archived"] = True
 
         kept.append(item)
@@ -1127,7 +1230,7 @@ async def global_exception_handler(
 
 
 # ============================================================
-# LOCAL DEVELOPMENT
+# LOCAL RUNNER
 # ============================================================
 
 if __name__ == "__main__":
