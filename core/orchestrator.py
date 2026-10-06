@@ -1,14 +1,15 @@
 """
-Autonomous Agent Orchestrator
------------------------------
-Coordinates the agent team through a controlled perception/reasoning/
-planning/execution loop.
+Orchestrator
+------------
+Coordinates the autonomous multi-agent system.
 
-The orchestrator may autonomously perform safe research, analysis,
-memory operations, simulation work, and planning.
-
-Consequential external actions remain behind the ToolRegistry approval
-gate and cannot be executed without an exact Creator approval.
+Responsibilities:
+- Register and manage agents.
+- Route commands to the correct agent.
+- Run autonomous cognitive cycles.
+- Assign and broadcast tasks.
+- Respect simulation/live mode boundaries.
+- Never bypass Creator approval.
 """
 
 from datetime import datetime
@@ -26,91 +27,90 @@ class Orchestrator:
     ):
         self.memory = memory
         self.tools = tools
-        self.agents = agents or {}
         self.world = world
         self.economy = economy
 
+        self.agents: Dict[str, Any] = {}
         self.running = False
         self.cycle_count = 0
-        self.last_cycle_at = None
+        self.last_cycle: Optional[Dict[str, Any]] = None
+
+        for agent in (agents or {}).values():
+            self.register_agent(agent)
+
+    # ------------------------------------------------------------------
+    # Agent management
+    # ------------------------------------------------------------------
 
     def register_agent(self, agent) -> Dict[str, Any]:
-        if agent is None:
+        if agent is None or not getattr(agent, "name", None):
             return {
                 "status": "error",
-                "message": "Agent is required.",
+                "message": "Invalid agent.",
             }
 
-        name = getattr(agent, "name", None)
+        self.agents[agent.name] = agent
 
-        if not name:
+        return {
+            "status": "success",
+            "agent": agent.name,
+            "message": f"Agent {agent.name} registered.",
+        }
+
+    def unregister_agent(self, name: str) -> Dict[str, Any]:
+        if name not in self.agents:
             return {
                 "status": "error",
-                "message": "Agent must have a name.",
+                "message": f"Agent {name} is not registered.",
             }
 
-        self.agents[name] = agent
+        del self.agents[name]
 
         return {
             "status": "success",
             "agent": name,
-            "message": f"Registered agent: {name}",
+            "message": f"Agent {name} unregistered.",
         }
 
-    def unregister_agent(self, agent_name: str) -> Dict[str, Any]:
-        agent_name = (agent_name or "").strip()
+    def get_agents(self) -> Dict[str, Any]:
+        return self.agents
 
-        if agent_name not in self.agents:
-            return {
-                "status": "error",
-                "message": f"Unknown agent: {agent_name}",
-            }
-
-        del self.agents[agent_name]
-
-        return {
-            "status": "success",
-            "agent": agent_name,
-        }
-
-    def get_agents(self) -> List[str]:
-        return sorted(self.agents.keys())
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def start(self) -> Dict[str, Any]:
         self.running = True
 
-        self.memory.log(
-            "Orchestrator",
-            "Autonomous orchestration started.",
-        )
-
-        return self.status()
+        return {
+            "status": "success",
+            "running": True,
+            "message": "Autonomous orchestration enabled.",
+        }
 
     def stop(self) -> Dict[str, Any]:
         self.running = False
 
-        self.memory.log(
-            "Orchestrator",
-            "Autonomous orchestration stopped.",
-        )
-
-        return self.status()
+        return {
+            "status": "success",
+            "running": False,
+            "message": "Autonomous orchestration stopped.",
+        }
 
     def status(self) -> Dict[str, Any]:
         return {
             "status": "success",
             "running": self.running,
             "cycle_count": self.cycle_count,
-            "last_cycle_at": self.last_cycle_at,
-            "agents": self.get_agents(),
             "agent_count": len(self.agents),
+            "agents": list(self.agents.keys()),
             "mode": self._get_mode(),
-            "safety": {
-                "consequential_actions_require_creator_approval": True,
-                "exact_approval_required": True,
-                "approval_is_single_use": True,
-            },
+            "last_cycle": self.last_cycle,
         }
+
+    # ------------------------------------------------------------------
+    # Main orchestration
+    # ------------------------------------------------------------------
 
     def run_cycle(
         self,
@@ -118,50 +118,35 @@ class Orchestrator:
         agent_name: str = "",
     ) -> Dict[str, Any]:
         self.cycle_count += 1
-        self.last_cycle_at = datetime.utcnow().isoformat()
 
-        command = (command or "").strip()
-        agent_name = (agent_name or "").strip()
+        started_at = self._timestamp()
 
-        results = []
-
-        selected_agents = self._select_agents(
-            agent_name=agent_name,
-            command=command,
-        )
-
-        if not selected_agents:
-            return {
-                "status": "error",
-                "cycle": self.cycle_count,
-                "message": "No suitable agents available.",
-                "available_agents": self.get_agents(),
-            }
-
-        for agent in selected_agents:
-            result = self._run_agent_cycle(
-                agent,
-                command,
+        if command:
+            results = self.route_command(
+                command=command,
+                agent_name=agent_name,
             )
+        else:
+            results = {}
 
-            results.append(result)
+            selected_agents = self._select_agents(agent_name)
 
-        self.memory.log(
-            "Orchestrator",
-            (
-                f"Completed autonomous cycle "
-                f"{self.cycle_count} with "
-                f"{len(results)} agent(s)."
-            ),
-        )
+            for name, agent in selected_agents.items():
+                results[name] = self._run_agent_cycle(agent)
 
-        return {
+        cycle_result = {
             "status": "success",
             "cycle": self.cycle_count,
-            "timestamp": self.last_cycle_at,
+            "started_at": started_at,
+            "completed_at": self._timestamp(),
             "running": self.running,
+            "mode": self._get_mode(),
             "results": results,
         }
+
+        self.last_cycle = cycle_result
+
+        return cycle_result
 
     def run_once(
         self,
@@ -174,14 +159,18 @@ class Orchestrator:
         )
 
     def run_autonomous_cycle(self) -> Dict[str, Any]:
-        """
-        Run a safe autonomous cycle without requiring a user command.
+        if not self.running:
+            return {
+                "status": "blocked",
+                "message": "Orchestrator is stopped.",
+                "hint": "Start the orchestrator before autonomous cycles.",
+            }
 
-        The cycle lets agents inspect their pending work and execute
-        only the capabilities already exposed through their normal
-        agent/tool interfaces.
-        """
         return self.run_cycle()
+
+    # ------------------------------------------------------------------
+    # Task delegation
+    # ------------------------------------------------------------------
 
     def assign_task(
         self,
@@ -189,246 +178,162 @@ class Orchestrator:
         task: str,
         priority: str = "normal",
     ) -> Dict[str, Any]:
-        agent_name = (agent_name or "").strip()
-        task = (task or "").strip()
-        priority = (priority or "normal").strip().lower()
-
-        if not agent_name:
-            return {
-                "status": "error",
-                "message": "Agent name is required.",
-            }
-
-        if not task:
-            return {
-                "status": "error",
-                "message": "Task is required.",
-            }
-
-        agent = self.agents.get(agent_name)
-
-        if agent is None:
+        if agent_name not in self.agents:
             return {
                 "status": "error",
                 "message": f"Unknown agent: {agent_name}",
-                "available_agents": self.get_agents(),
             }
 
+        if not task or not task.strip():
+            return {
+                "status": "error",
+                "message": "Task cannot be empty.",
+            }
+
+        agent = self.agents[agent_name]
+
         if hasattr(agent, "create_task"):
-            try:
-                result = agent.create_task(
-                    task,
-                    priority=priority,
-                )
-
-                return {
-                    "status": "success",
-                    "agent": agent_name,
-                    "task": task,
-                    "result": result,
-                }
-            except TypeError:
-                try:
-                    result = agent.create_task(task)
-
-                    return {
-                        "status": "success",
-                        "agent": agent_name,
-                        "task": task,
-                        "result": result,
-                    }
-                except Exception as exc:
-                    return {
-                        "status": "error",
-                        "agent": agent_name,
-                        "message": str(exc),
-                    }
-
-        try:
-            task_id = self.memory.add_task(
-                agent_name,
-                task,
+            result = agent.create_task(
+                title=task.strip(),
+                description=task.strip(),
                 priority=priority,
             )
 
             return {
                 "status": "success",
                 "agent": agent_name,
-                "task": task,
-                "task_id": task_id,
+                "task": task.strip(),
+                "priority": priority,
+                "result": result,
             }
 
-        except TypeError:
-            try:
-                task_id = self.memory.add_task(
-                    {
-                        "agent": agent_name,
-                        "description": task,
-                        "priority": priority,
-                    }
-                )
-
-                return {
-                    "status": "success",
-                    "agent": agent_name,
-                    "task": task,
-                    "task_id": task_id,
-                }
-
-            except Exception as exc:
-                return {
-                    "status": "error",
-                    "agent": agent_name,
-                    "message": str(exc),
-                }
-
-        except Exception as exc:
-            return {
-                "status": "error",
-                "agent": agent_name,
-                "message": str(exc),
-            }
-
-    def broadcast(
-        self,
-        message: str,
-        sender: str = "Orchestrator",
-    ) -> Dict[str, Any]:
-        message = (message or "").strip()
-
-        if not message:
-            return {
-                "status": "error",
-                "message": "Broadcast message is required.",
-            }
-
-        delivered = []
-
-        for agent_name, agent in self.agents.items():
-            try:
-                if hasattr(agent, "receive_message"):
-                    agent.receive_message(
-                        message,
-                        sender=sender,
-                    )
-                    delivered.append(agent_name)
-                    continue
-
-                if hasattr(agent, "room") and hasattr(
-                    agent.room,
-                    "receive_message",
-                ):
-                    agent.room.receive_message(
-                        message,
-                        sender=sender,
-                    )
-                    delivered.append(agent_name)
-
-            except Exception:
-                continue
-
-        self.memory.log(
-            "Orchestrator",
-            (
-                f"Broadcast from {sender}: "
-                f"{message}"
-            ),
+        task_record = self.memory.add_task(
+            agent=agent_name,
+            title=task.strip(),
+            description=task.strip(),
+            priority=priority,
         )
 
         return {
             "status": "success",
-            "sender": sender,
-            "message": message,
-            "delivered_to": delivered,
+            "agent": agent_name,
+            "task": task.strip(),
+            "priority": priority,
+            "task_record": task_record,
         }
+
+    def broadcast(self, message: str) -> Dict[str, Any]:
+        if not message or not message.strip():
+            return {
+                "status": "error",
+                "message": "Broadcast message cannot be empty.",
+            }
+
+        results = {}
+
+        for name, agent in self.agents.items():
+            if hasattr(agent, "receive_message"):
+                results[name] = agent.receive_message(
+                    sender="Orchestrator",
+                    message=message.strip(),
+                )
+            else:
+                results[name] = {
+                    "status": "skipped",
+                    "message": "Agent does not support messages.",
+                }
+
+        return {
+            "status": "success",
+            "message": message.strip(),
+            "recipients": list(self.agents.keys()),
+            "results": results,
+        }
+
+    # ------------------------------------------------------------------
+    # Command routing
+    # ------------------------------------------------------------------
 
     def route_command(
         self,
         command: str,
+        agent_name: str = "",
     ) -> Dict[str, Any]:
         command = (command or "").strip()
 
         if not command:
             return {
                 "status": "error",
-                "message": "Command is required.",
+                "message": "No command supplied.",
             }
 
-        target = self._detect_agent(command)
+        if agent_name:
+            if agent_name not in self.agents:
+                return {
+                    "status": "error",
+                    "message": f"Unknown agent: {agent_name}",
+                    "available_agents": list(self.agents.keys()),
+                }
 
-        if target:
-            agent = self.agents.get(target)
-
-            if agent is not None:
-                return self._run_agent_command(
-                    agent,
-                    command,
-                )
-
-        boss = self.agents.get("Boss")
-
-        if boss is not None:
             return self._run_agent_command(
-                boss,
+                self.agents[agent_name],
                 command,
             )
 
-        return self.run_cycle(
-            command=command,
-        )
+        detected = self._detect_agent(command)
 
-    def _run_agent_cycle(
-        self,
-        agent,
-        command: str,
-    ) -> Dict[str, Any]:
-        name = getattr(agent, "name", "Unknown")
+        if detected:
+            return self._run_agent_command(
+                self.agents[detected],
+                command,
+            )
 
+        # Default command owner is Boss.
+        if "Boss" in self.agents:
+            return self._run_agent_command(
+                self.agents["Boss"],
+                command,
+            )
+
+        # If Boss is unavailable, run against the first registered agent.
+        if self.agents:
+            first_agent = next(iter(self.agents.values()))
+
+            return self._run_agent_command(
+                first_agent,
+                command,
+            )
+
+        return {
+            "status": "error",
+            "message": "No agents are registered.",
+        }
+
+    # ------------------------------------------------------------------
+    # Agent execution
+    # ------------------------------------------------------------------
+
+    def _run_agent_cycle(self, agent) -> Dict[str, Any]:
         try:
-            if command and hasattr(
-                agent,
-                "process_command",
-            ):
-                result = agent.process_command(command)
-
-                return {
-                    "status": "success",
-                    "agent": name,
-                    "operation": "command",
-                    "result": result,
-                }
-
             if hasattr(agent, "run_cycle"):
-                result = agent.run_cycle()
+                return agent.run_cycle()
 
-                return {
-                    "status": "success",
-                    "agent": name,
-                    "operation": "cycle",
-                    "result": result,
-                }
+            if hasattr(agent, "process_command"):
+                return agent.process_command("run")
+
+            if hasattr(agent, "process_order"):
+                return agent.process_order("run")
 
             return {
                 "status": "error",
-                "agent": name,
-                "message": (
-                    "Agent has no process_command or "
-                    "run_cycle method."
-                ),
+                "agent": getattr(agent, "name", "Unknown"),
+                "message": "Agent has no runnable cycle method.",
             }
 
         except Exception as exc:
-            self.memory.log(
-                "Orchestrator",
-                (
-                    f"Agent cycle failed for "
-                    f"{name}: {exc}"
-                ),
-            )
-
             return {
                 "status": "error",
-                "agent": name,
+                "agent": getattr(agent, "name", "Unknown"),
                 "message": str(exc),
             }
 
@@ -437,116 +342,101 @@ class Orchestrator:
         agent,
         command: str,
     ) -> Dict[str, Any]:
-        name = getattr(agent, "name", "Unknown")
-
         try:
             if hasattr(agent, "process_command"):
                 return agent.process_command(command)
 
-            if hasattr(agent, "run_cycle"):
-                return agent.run_cycle()
+            if hasattr(agent, "process_order"):
+                return agent.process_order(command)
 
             return {
                 "status": "error",
-                "agent": name,
-                "message": (
-                    "Agent cannot process commands."
-                ),
+                "agent": getattr(agent, "name", "Unknown"),
+                "message": "Agent cannot process commands.",
             }
 
         except Exception as exc:
-            self.memory.log(
-                "Orchestrator",
-                (
-                    f"Command failed for {name}: "
-                    f"{exc}"
-                ),
-            )
-
             return {
                 "status": "error",
-                "agent": name,
+                "agent": getattr(agent, "name", "Unknown"),
                 "message": str(exc),
             }
+
+    # ------------------------------------------------------------------
+    # Agent selection
+    # ------------------------------------------------------------------
 
     def _select_agents(
         self,
         agent_name: str = "",
-        command: str = "",
-    ) -> List[Any]:
+    ) -> Dict[str, Any]:
         if agent_name:
-            agent = self.agents.get(agent_name)
+            if agent_name in self.agents:
+                return {
+                    agent_name: self.agents[agent_name],
+                }
 
-            if agent is not None:
-                return [agent]
+            return {}
 
-            return []
+        return dict(self.agents)
 
-        target = self._detect_agent(command)
-
-        if target:
-            agent = self.agents.get(target)
-
-            if agent is not None:
-                return [agent]
-
-        if command:
-            boss = self.agents.get("Boss")
-
-            if boss is not None:
-                return [boss]
-
-        return list(self.agents.values())
-
-    def _detect_agent(
-        self,
-        command: str,
-    ) -> str:
-        lowered = (command or "").lower()
-
-        names = sorted(
-            self.agents.keys(),
-            key=len,
-            reverse=True,
-        )
-
-        for name in names:
-            if name.lower() in lowered:
-                return name
+    def _detect_agent(self, command: str) -> Optional[str]:
+        lowered = command.lower()
 
         aliases = {
-            "research": "InfoFarmer",
+            "boss": "Boss",
+            "banker": "Banker",
+            "infofarmer": "InfoFarmer",
+            "info farmer": "InfoFarmer",
             "researcher": "InfoFarmer",
-            "info": "InfoFarmer",
-            "information": "InfoFarmer",
-            "finance": "Banker",
-            "financial": "Banker",
-            "money": "Banker",
-            "bank": "Banker",
+            "research": "InfoFarmer",
             "opportunity": "OpportunityAgent",
             "opportunities": "OpportunityAgent",
+            "opportunityagent": "OpportunityAgent",
             "revenue": "OpportunityAgent",
         }
 
-        for keyword, agent_name in aliases.items():
-            if keyword in lowered:
-                if agent_name in self.agents:
-                    return agent_name
+        for alias, agent_name in aliases.items():
+            if alias in lowered and agent_name in self.agents:
+                return agent_name
 
-        return ""
+        return None
+
+    # ------------------------------------------------------------------
+    # Mode
+    # ------------------------------------------------------------------
 
     def _get_mode(self) -> str:
-        if self.economy is not None:
-            try:
-                return self.economy.get_mode()
-            except Exception:
-                pass
-
         try:
-            world_state = self.memory.get_world_state()
-            return world_state.get(
-                "economy_mode",
-                "simulation",
-            )
+            if self.economy is not None and hasattr(
+                self.economy,
+                "get_mode",
+            ):
+                return self.economy.get_mode()
+
+            if hasattr(self.memory, "get_world_state"):
+                state = self.memory.get_world_state()
+                return state.get(
+                    "economy_mode",
+                    "simulation",
+                )
+
+            if hasattr(self.memory, "get_world"):
+                state = self.memory.get_world()
+                return state.get(
+                    "economy_mode",
+                    "simulation",
+                )
+
         except Exception:
-            return "simulation"
+            pass
+
+        return "simulation"
+
+    # ------------------------------------------------------------------
+    # Utility
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _timestamp() -> str:
+        return datetime.utcnow().isoformat() + "Z"
