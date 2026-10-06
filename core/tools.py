@@ -670,6 +670,3 @@ def create_default_tools(
     )
 
     return registry
-
-
-
