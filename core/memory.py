@@ -12,9 +12,6 @@ Stores:
 - transactions
 - logs
 - Creator approvals
-
-The memory layer is deliberately simple and persistent so the
-simulation can recover its state after a restart.
 """
 
 from datetime import datetime
@@ -28,7 +25,9 @@ class SharedMemory:
         self,
         persist_path: str = "data/memory.json",
     ):
-        self.persist_path = Path(persist_path)
+        self.persist_path = Path(
+            persist_path
+        )
 
         self.persist_path.parent.mkdir(
             parents=True,
@@ -48,9 +47,11 @@ class SharedMemory:
         self._load()
         self._ensure_structure()
 
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
+        self.save()
+
+    # =========================================================
+    # STORAGE
+    # =========================================================
 
     def _load(self) -> None:
         if not self.persist_path.exists():
@@ -64,7 +65,10 @@ class SharedMemory:
             ) as file:
                 loaded = json.load(file)
 
-            if isinstance(loaded, dict):
+            if isinstance(
+                loaded,
+                dict,
+            ):
                 self.data = loaded
 
         except (
@@ -73,8 +77,6 @@ class SharedMemory:
             TypeError,
             ValueError,
         ):
-            # Do not allow a corrupt persistence file to prevent
-            # the application from starting.
             self.data = {}
 
     def _ensure_structure(self) -> None:
@@ -89,10 +91,12 @@ class SharedMemory:
         }
 
         for key, default in defaults.items():
+
             if key not in self.data:
                 self.data[key] = default
+                continue
 
-            elif not isinstance(
+            if not isinstance(
                 self.data[key],
                 type(default),
             ):
@@ -104,8 +108,10 @@ class SharedMemory:
             exist_ok=True,
         )
 
-        temporary_path = self.persist_path.with_suffix(
-            ".tmp"
+        temporary_path = (
+            self.persist_path.with_suffix(
+                ".tmp"
+            )
         )
 
         with open(
@@ -124,47 +130,70 @@ class SharedMemory:
             self.persist_path
         )
 
-    # ------------------------------------------------------------------
-    # World State
-    # ------------------------------------------------------------------
+    # =========================================================
+    # WORLD STATE
+    # =========================================================
 
     def set_world_state(
         self,
         key: str,
         value: Any,
-    ) -> None:
-        self.data["world_state"][key] = value
+    ):
+        self.data[
+            "world_state"
+        ][key] = value
+
         self.save()
+
+        return value
 
     def get_world_state(
         self,
         key: Optional[str] = None,
         default: Any = None,
-    ) -> Any:
+    ):
         if key is None:
-            return self.data["world_state"]
+            return self.data[
+                "world_state"
+            ]
 
-        return self.data["world_state"].get(
+        return self.data[
+            "world_state"
+        ].get(
             key,
             default,
         )
 
-    # ------------------------------------------------------------------
-    # Knowledge
-    # ------------------------------------------------------------------
+    # =========================================================
+    # KNOWLEDGE
+    # =========================================================
 
     def add_knowledge(
         self,
         source: str,
         content: str,
         tags: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+    ):
 
-        existing_ids = [
-            int(item.get("id", 0))
-            for item in self.data["knowledge"]
-            if str(item.get("id", "")).isdigit()
-        ]
+        existing_ids = []
+
+        for item in self.data[
+            "knowledge"
+        ]:
+            try:
+                existing_ids.append(
+                    int(
+                        item.get(
+                            "id",
+                            0,
+                        )
+                    )
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
 
         next_id = (
             max(existing_ids) + 1
@@ -174,13 +203,18 @@ class SharedMemory:
 
         entry = {
             "id": next_id,
-            "timestamp": self._timestamp(),
+            "timestamp": (
+                self._timestamp()
+            ),
             "source": source,
             "content": content,
             "tags": tags or [],
+            "archived": False,
         }
 
-        self.data["knowledge"].append(entry)
+        self.data[
+            "knowledge"
+        ].append(entry)
 
         self.save()
 
@@ -190,25 +224,31 @@ class SharedMemory:
         self,
         tags: Optional[List[str]] = None,
         limit: int = 20,
-    ) -> List[Dict[str, Any]]:
+    ):
 
-        items = self.data["knowledge"]
+        items = self.data[
+            "knowledge"
+        ]
 
         if tags:
             items = [
                 item
                 for item in items
                 if any(
-                    tag in item.get("tags", [])
+                    tag
+                    in item.get(
+                        "tags",
+                        [],
+                    )
                     for tag in tags
                 )
             ]
 
         return items[-limit:]
 
-    # ------------------------------------------------------------------
-    # Tasks
-    # ------------------------------------------------------------------
+    # =========================================================
+    # TASKS
+    # =========================================================
 
     def add_task(
         self,
@@ -216,13 +256,27 @@ class SharedMemory:
         description: str,
         assigned_to: str,
         created_by: str = "Boss",
-    ) -> Dict[str, Any]:
+    ):
 
-        existing_ids = [
-            int(item.get("id", 0))
-            for item in self.data["tasks"]
-            if str(item.get("id", "")).isdigit()
-        ]
+        existing_ids = []
+
+        for item in self.data[
+            "tasks"
+        ]:
+            try:
+                existing_ids.append(
+                    int(
+                        item.get(
+                            "id",
+                            0,
+                        )
+                    )
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
 
         next_id = (
             max(existing_ids) + 1
@@ -241,11 +295,22 @@ class SharedMemory:
             "status": "pending",
             "created_at": now,
             "updated_at": now,
+            "notes": "",
         }
 
-        self.data["tasks"].append(task)
+        self.data[
+            "tasks"
+        ].append(task)
 
         self.save()
+
+        self.log(
+            created_by,
+            (
+                f"Created task #{next_id} "
+                f"for {assigned_to}: {title}"
+            ),
+        )
 
         return task
 
@@ -254,12 +319,18 @@ class SharedMemory:
         task_id: int,
         status: str,
         notes: str = "",
-    ) -> Optional[Dict[str, Any]]:
+    ):
 
-        for task in self.data["tasks"]:
+        for task in self.data[
+            "tasks"
+        ]:
+
             try:
                 current_id = int(
-                    task.get("id", -1)
+                    task.get(
+                        "id",
+                        -1,
+                    )
                 )
             except (
                 TypeError,
@@ -267,16 +338,28 @@ class SharedMemory:
             ):
                 continue
 
-            if current_id != int(task_id):
+            if current_id != int(
+                task_id
+            ):
                 continue
 
             task["status"] = status
-            task["updated_at"] = self._timestamp()
+            task["updated_at"] = (
+                self._timestamp()
+            )
 
             if notes:
                 task["notes"] = notes
 
             self.save()
+
+            self.log(
+                "TaskSystem",
+                (
+                    f"Task #{task_id} "
+                    f"changed to {status}"
+                ),
+            )
 
             return task
 
@@ -286,15 +369,19 @@ class SharedMemory:
         self,
         assigned_to: Optional[str] = None,
         status: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+    ):
 
-        tasks = self.data["tasks"]
+        tasks = self.data[
+            "tasks"
+        ]
 
         if assigned_to:
             tasks = [
                 task
                 for task in tasks
-                if task.get("assigned_to")
+                if task.get(
+                    "assigned_to"
+                )
                 == assigned_to
             ]
 
@@ -302,25 +389,59 @@ class SharedMemory:
             tasks = [
                 task
                 for task in tasks
-                if task.get("status")
+                if task.get(
+                    "status"
+                )
                 == status
             ]
 
         return tasks
 
-    # ------------------------------------------------------------------
-    # Agent Status
-    # ------------------------------------------------------------------
+    def get_task(
+        self,
+        task_id: int,
+    ):
+
+        for task in self.data[
+            "tasks"
+        ]:
+            try:
+                current_id = int(
+                    task.get(
+                        "id",
+                        -1,
+                    )
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if current_id == int(
+                task_id
+            ):
+                return task
+
+        return None
+
+    # =========================================================
+    # AGENT STATUS
+    # =========================================================
 
     def set_agent_status(
         self,
         agent_name: str,
         status: Dict[str, Any],
-    ) -> None:
+    ):
 
-        self.data["agent_status"][agent_name] = {
+        self.data[
+            "agent_status"
+        ][agent_name] = {
             **status,
-            "last_updated": self._timestamp(),
+            "last_updated": (
+                self._timestamp()
+            ),
         }
 
         self.save()
@@ -328,22 +449,26 @@ class SharedMemory:
     def get_agent_status(
         self,
         agent_name: str,
-    ) -> Dict[str, Any]:
+    ):
 
-        return self.data["agent_status"].get(
+        return self.data[
+            "agent_status"
+        ].get(
             agent_name,
             {},
         )
 
     def get_all_agent_status(
         self,
-    ) -> Dict[str, Any]:
+    ):
 
-        return self.data["agent_status"]
+        return self.data[
+            "agent_status"
+        ]
 
-    # ------------------------------------------------------------------
-    # Transactions / Money
-    # ------------------------------------------------------------------
+    # =========================================================
+    # TRANSACTIONS
+    # =========================================================
 
     def add_transaction(
         self,
@@ -351,13 +476,27 @@ class SharedMemory:
         from_agent: str,
         to_agent: str,
         reason: str,
-    ) -> Dict[str, Any]:
+    ):
 
-        existing_ids = [
-            int(item.get("id", 0))
-            for item in self.data["transactions"]
-            if str(item.get("id", "")).isdigit()
-        ]
+        existing_ids = []
+
+        for item in self.data[
+            "transactions"
+        ]:
+            try:
+                existing_ids.append(
+                    int(
+                        item.get(
+                            "id",
+                            0,
+                        )
+                    )
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
 
         next_id = (
             max(existing_ids) + 1
@@ -367,16 +506,18 @@ class SharedMemory:
 
         transaction = {
             "id": next_id,
-            "timestamp": self._timestamp(),
+            "timestamp": (
+                self._timestamp()
+            ),
             "amount": float(amount),
             "from": from_agent,
             "to": to_agent,
             "reason": reason,
         }
 
-        self.data["transactions"].append(
-            transaction
-        )
+        self.data[
+            "transactions"
+        ].append(transaction)
 
         self.save()
 
@@ -392,7 +533,10 @@ class SharedMemory:
         for transaction in self.data[
             "transactions"
         ]:
-            if transaction.get("to") == agent_name:
+
+            if transaction.get(
+                "to"
+            ) == agent_name:
                 balance += float(
                     transaction.get(
                         "amount",
@@ -400,7 +544,9 @@ class SharedMemory:
                     )
                 )
 
-            if transaction.get("from") == agent_name:
+            if transaction.get(
+                "from"
+            ) == agent_name:
                 balance -= float(
                     transaction.get(
                         "amount",
@@ -410,29 +556,35 @@ class SharedMemory:
 
         return balance
 
-    # ------------------------------------------------------------------
-    # Logs
-    # ------------------------------------------------------------------
+    # =========================================================
+    # LOGGING
+    # =========================================================
 
     def log(
         self,
         agent: str,
         message: str,
         level: str = "info",
-    ) -> Dict[str, Any]:
+    ):
 
         entry = {
-            "timestamp": self._timestamp(),
+            "timestamp": (
+                self._timestamp()
+            ),
             "agent": agent,
             "level": level,
             "message": message,
         }
 
-        self.data["logs"].append(entry)
+        self.data[
+            "logs"
+        ].append(entry)
 
-        self.data["logs"] = (
-            self.data["logs"][-200:]
-        )
+        self.data[
+            "logs"
+        ] = self.data[
+            "logs"
+        ][-200:]
 
         self.save()
 
@@ -441,18 +593,20 @@ class SharedMemory:
     def get_logs(
         self,
         limit: int = 50,
-    ) -> List[Dict[str, Any]]:
+    ):
 
-        return self.data["logs"][-limit:]
+        return self.data[
+            "logs"
+        ][-limit:]
 
-    # ------------------------------------------------------------------
-    # Creator Approval Helpers
-    # ------------------------------------------------------------------
+    # =========================================================
+    # APPROVALS
+    # =========================================================
 
     def get_approvals(
         self,
         status: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+    ):
 
         approvals = self.data.get(
             "approvals",
@@ -465,14 +619,20 @@ class SharedMemory:
         return [
             approval
             for approval in approvals
-            if approval.get("status")
+            if approval.get(
+                "status"
+            )
             == status
         ]
 
-    # ------------------------------------------------------------------
-    # Utility
-    # ------------------------------------------------------------------
+    # =========================================================
+    # UTILITY
+    # =========================================================
+
+    def clear_runtime_logs(self):
+        self.data["logs"] = []
+        self.save()
 
     @staticmethod
-    def _timestamp() -> str:
+    def _timestamp():
         return datetime.utcnow().isoformat()
