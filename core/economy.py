@@ -1,189 +1,97 @@
 """
-Module 2 - Autonomous Economy Engine
-------------------------------------
+Economy System
+--------------
 
-Supports both SIMULATION and REAL modes.
+Tracks simulated and real-capable economic activity.
 
-Banker remains the only financial authority.
+The economy has two operating modes:
 
-Operating modes:
+SIMULATION
+    Safe internal experimentation.
 
-    SIMULATION
-        Safe internal economy.
-        Experiments and financial activity are simulated.
-
-    REAL
-        Live-capable economy.
-        Consequential/protected actions still require explicit
-        Creator approval through the ApprovalGate.
-
-IMPORTANT:
-    REAL does NOT mean unrestricted execution.
-    It only enables live-capable functionality.
+REAL
+    Live-capable mode. Consequential actions remain protected
+    by the Creator Approval Gate.
 """
 
-from typing import Dict, Any, List, Optional
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from .memory import SharedMemory
 
 
 class Economy:
-    """
-    Autonomous economy state and policy controller.
+    VALID_MODES = {"simulation", "real"}
 
-    The Economy owns the operating mode, while ToolRegistry and the
-    Creator Approval Gate control whether individual external actions
-    may actually execute.
-    """
-
-    VALID_MODES = {
-        "simulation",
-        "real",
-    }
-
-    def __init__(self, memory: SharedMemory):
+    def __init__(
+        self,
+        memory: SharedMemory,
+    ):
         self.memory = memory
 
-        if "economy" not in self.memory.data:
-            self.memory.data["economy"] = {
-                "mode": "simulation",
-                "opportunities": [],
-                "experiments": [],
-                "next_opportunity_id": 1,
-                "next_experiment_id": 1,
-            }
-            self.memory.save()
-
-        # Preserve compatibility with older memory files.
-        economy_data = self.memory.data["economy"]
-
-        economy_data.setdefault(
-            "mode",
-            "simulation",
+        world_state = self.memory.data.setdefault(
+            "world_state",
+            {},
         )
 
-        economy_data.setdefault(
+        if world_state.get("economy_mode") not in self.VALID_MODES:
+            world_state["economy_mode"] = "simulation"
+
+        world_state.setdefault(
             "opportunities",
             [],
         )
 
-        economy_data.setdefault(
+        world_state.setdefault(
             "experiments",
             [],
         )
 
-        economy_data.setdefault(
-            "next_opportunity_id",
-            1,
-        )
+        self.memory.save()
 
-        economy_data.setdefault(
-            "next_experiment_id",
-            1,
-        )
-
-        # Guard against an invalid persisted mode.
-        if economy_data.get("mode") not in self.VALID_MODES:
-            economy_data["mode"] = "simulation"
-            self.memory.save()
-
-    # ================================================================
-    # OPERATING MODE
-    # ================================================================
+    # ---------------------------------------------------------
+    # MODE
+    # ---------------------------------------------------------
 
     def get_mode(self) -> str:
-        """
-        Return the current operating mode.
-
-        Possible values:
-            simulation
-            real
-        """
-        mode = self.memory.data["economy"].get(
-            "mode",
+        return self.memory.get_world_state(
+            "economy_mode",
             "simulation",
         )
 
-        if mode not in self.VALID_MODES:
-            return "simulation"
-
-        return mode
-
     def set_mode(self, mode: str) -> str:
-        """
-        Change the economy operating mode.
-
-        This changes availability of live-capable functionality.
-
-        It does NOT automatically approve protected actions.
-        """
-
-        mode = str(mode).lower().strip()
-
-        # Allow the UI to use "sim" or "live" as aliases.
-        if mode == "sim":
-            mode = "simulation"
+        mode = str(mode).strip().lower()
 
         if mode == "live":
             mode = "real"
 
         if mode not in self.VALID_MODES:
-            return (
-                "Invalid mode. "
+            raise ValueError(
+                "Invalid economy mode. "
                 "Use 'simulation' or 'real'."
             )
 
-        old_mode = self.get_mode()
-
-        if old_mode == mode:
-            return (
-                f"Economy mode already set to: "
-                f"{mode.upper()}"
-            )
-
-        self.memory.data["economy"]["mode"] = mode
-
-        self.memory.save()
+        self.memory.set_world_state(
+            "economy_mode",
+            mode,
+        )
 
         self.memory.log(
             "Economy",
-            f"Mode changed: {old_mode} → {mode}",
+            f"Economy mode changed to {mode}.",
         )
 
         return (
-            f"Economy mode set to: "
-            f"{mode.upper()}"
+            f"Economy mode set to {mode}."
         )
 
     def is_simulation(self) -> bool:
-        """
-        Return True when the economy is running in simulation mode.
-        """
         return self.get_mode() == "simulation"
 
     def is_real(self) -> bool:
-        """
-        Return True when the economy is running in real/live mode.
-        """
         return self.get_mode() == "real"
 
     def get_mode_policy(self) -> Dict[str, Any]:
-        """
-        Return a machine-readable description of the current
-        operating policy.
-
-        This is intended for the UI, agents and ToolRegistry.
-
-        The policy intentionally makes an important distinction:
-
-            mode == real
-                does not mean unrestricted.
-
-        Protected consequential actions remain subject to the
-        Creator Approval Gate.
-        """
-
         if self.is_simulation():
             return {
                 "mode": "simulation",
@@ -194,79 +102,82 @@ class Economy:
                 "protected_actions_allowed": False,
                 "creator_approval_required": True,
                 "description": (
-                    "Agents operate inside the simulated economy. "
-                    "Consequential real-world actions are disabled."
+                    "Safe simulated environment. "
+                    "No consequential live-world actions."
                 ),
             }
 
         return {
             "mode": "real",
-            "label": "LIVE",
+            "label": "REAL / LIVE",
             "simulation": False,
             "live": True,
             "live_tools_available": True,
             "protected_actions_allowed": True,
             "creator_approval_required": True,
             "description": (
-                "Live-capable tools may be available. "
-                "Protected consequential actions still require "
+                "Live-capable mode. "
+                "Consequential actions still require "
                 "explicit Creator approval."
             ),
         }
 
     def can_use_live_tools(self) -> bool:
-        """
-        Return whether the current mode permits a live-capable tool
-        to be considered for execution.
-
-        This is a capability check only.
-
-        It is NOT an approval.
-
-        A protected action must still pass through the ApprovalGate.
-        """
         return self.is_real()
 
-    def requires_creator_approval(self) -> bool:
-        """
-        Return whether consequential actions require Creator
-        approval under the current economy policy.
-
-        The answer is deliberately always True for protected actions.
-        """
-
+    def requires_creator_approval(
+        self,
+        action: str = "",
+    ) -> bool:
         return True
 
-    # ================================================================
+    # ---------------------------------------------------------
     # OPPORTUNITIES
-    # ================================================================
+    # ---------------------------------------------------------
 
     def create_opportunity(
         self,
         name: str,
         description: str,
-        startup_cost: float,
-        expected_expenses: float,
+        startup_cost: float = 0.0,
+        expected_expenses: float = 0.0,
         expected_revenue: float = 0.0,
         risk: str = "medium",
-        category: str = "general",
-        source: str = "OpportunityAgent",
     ) -> Dict[str, Any]:
 
-        opp_id = (
-            self.memory.data["economy"]
-            ["next_opportunity_id"]
+        opportunities = self.memory.data[
+            "world_state"
+        ].setdefault(
+            "opportunities",
+            [],
         )
 
-        self.memory.data["economy"][
-            "next_opportunity_id"
-        ] += 1
+        next_id = 1
+
+        if opportunities:
+            ids = []
+
+            for item in opportunities:
+                try:
+                    ids.append(
+                        int(item.get("id", 0))
+                    )
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    continue
+
+            if ids:
+                next_id = max(ids) + 1
 
         opportunity = {
-            "id": opp_id,
+            "id": next_id,
             "name": name,
             "description": description,
-            "startup_cost": float(startup_cost),
+            "startup_cost": float(
+                startup_cost
+            ),
             "expected_expenses": float(
                 expected_expenses
             ),
@@ -274,234 +185,286 @@ class Economy:
                 expected_revenue
             ),
             "risk": risk,
-            "category": category,
-            "status": "DISCOVERED",
-            "mode": self.get_mode(),
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
-            "source": source,
-            "analysis": {},
-            "notes": [],
+            "status": "identified",
+            "created_at": self._timestamp(),
+            "updated_at": self._timestamp(),
         }
 
-        self.memory.data["economy"][
-            "opportunities"
-        ].append(opportunity)
+        opportunities.append(
+            opportunity
+        )
 
         self.memory.save()
 
         self.memory.log(
             "Economy",
             (
-                f"Created opportunity #{opp_id}: "
-                f"{name} [{self.get_mode()}]"
+                f"Opportunity created: "
+                f"#{next_id} {name}"
             ),
         )
 
         return opportunity
-
-    def get_opportunity(
-        self,
-        opp_id: int,
-    ) -> Optional[Dict[str, Any]]:
-
-        for opp in self.memory.data["economy"][
-            "opportunities"
-        ]:
-            if opp["id"] == opp_id:
-                return opp
-
-        return None
 
     def list_opportunities(
         self,
         status: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
 
-        opps = self.memory.data["economy"][
-            "opportunities"
-        ]
-
-        if status:
-            opps = [
-                o
-                for o in opps
-                if o["status"] == status
-            ]
-
-        return opps
-
-    def update_opportunity_status(
-        self,
-        opp_id: int,
-        new_status: str,
-        notes: str = "",
-    ) -> Optional[Dict]:
-
-        opp = self.get_opportunity(opp_id)
-
-        if not opp:
-            return None
-
-        opp["status"] = new_status
-
-        opp["updated_at"] = (
-            datetime.utcnow().isoformat()
+        opportunities = self.memory.data[
+            "world_state"
+        ].get(
+            "opportunities",
+            [],
         )
 
-        if notes:
-            opp.setdefault(
-                "notes",
-                [],
-            )
+        if status:
+            opportunities = [
+                item
+                for item in opportunities
+                if item.get("status") == status
+            ]
 
-            opp["notes"].append(
-                {
-                    "timestamp": (
-                        datetime.utcnow().isoformat()
-                    ),
-                    "text": notes,
-                }
-            )
+        return opportunities
+
+    def get_opportunity(
+        self,
+        opp_id: int,
+    ) -> Optional[Dict[str, Any]]:
+
+        for opportunity in self.memory.data[
+            "world_state"
+        ].get(
+            "opportunities",
+            [],
+        ):
+            try:
+                current_id = int(
+                    opportunity.get(
+                        "id",
+                        -1,
+                    )
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if current_id == int(opp_id):
+                return opportunity
+
+        return None
+
+    def update_opportunity(
+        self,
+        opp_id: int,
+        status: Optional[str] = None,
+        **updates,
+    ) -> Optional[Dict[str, Any]]:
+
+        opportunity = self.get_opportunity(
+            opp_id
+        )
+
+        if not opportunity:
+            return None
+
+        if status is not None:
+            opportunity["status"] = status
+
+        for key, value in updates.items():
+            if key in {
+                "name",
+                "description",
+                "startup_cost",
+                "expected_expenses",
+                "expected_revenue",
+                "risk",
+            }:
+                opportunity[key] = value
+
+        opportunity["updated_at"] = (
+            self._timestamp()
+        )
 
         self.memory.save()
 
-        self.memory.log(
-            "Economy",
-            (
-                f"Opportunity #{opp_id} "
-                f"→ {new_status}"
-            ),
-        )
-
-        return opp
-
-    # ================================================================
-    # OPPORTUNITY ANALYSIS
-    # ================================================================
+        return opportunity
 
     def analyse_opportunity(
         self,
         opp_id: int,
-    ) -> Optional[Dict]:
+    ) -> Dict[str, Any]:
 
-        opp = self.get_opportunity(opp_id)
+        opportunity = self.get_opportunity(
+            opp_id
+        )
 
-        if not opp:
-            return None
+        if not opportunity:
+            return {
+                "success": False,
+                "error": (
+                    f"Opportunity #{opp_id} "
+                    "not found."
+                ),
+            }
 
-        potential_profit = (
-            opp["expected_revenue"]
-            - (
-                opp["startup_cost"]
-                + opp["expected_expenses"]
+        startup = float(
+            opportunity.get(
+                "startup_cost",
+                0,
+            )
+        )
+
+        expenses = float(
+            opportunity.get(
+                "expected_expenses",
+                0,
+            )
+        )
+
+        revenue = float(
+            opportunity.get(
+                "expected_revenue",
+                0,
             )
         )
 
         total_cost = (
-            opp["startup_cost"]
-            + opp["expected_expenses"]
+            startup + expenses
         )
 
-        roi = 0.0
+        expected_profit = (
+            revenue - total_cost
+        )
 
         if total_cost > 0:
             roi = (
-                potential_profit
+                expected_profit
                 / total_cost
             ) * 100
+        else:
+            roi = 0.0
+
+        risk = str(
+            opportunity.get(
+                "risk",
+                "medium",
+            )
+        ).lower()
+
+        if expected_profit <= 0:
+            recommendation = "reject"
+
+        elif risk == "high":
+            recommendation = "review"
+
+        elif roi >= 50:
+            recommendation = "strong_candidate"
+
+        else:
+            recommendation = "candidate"
 
         analysis = {
-            "potential_profit": round(
-                potential_profit,
+            "success": True,
+            "opportunity_id": opportunity[
+                "id"
+            ],
+            "name": opportunity[
+                "name"
+            ],
+            "startup_cost": startup,
+            "expected_expenses": expenses,
+            "expected_revenue": revenue,
+            "total_cost": total_cost,
+            "expected_profit": expected_profit,
+            "roi_percent": round(
+                roi,
                 2,
             ),
-            "estimated_roi_percent": round(
-                roi,
-                1,
-            ),
-            "risk_level": opp["risk"],
-            "recommendation": (
-                "TEST"
-                if (
-                    potential_profit > 0
-                    and opp["risk"] != "high"
-                )
-                else "CAUTION"
-            ),
-            "analysed_at": (
-                datetime.utcnow().isoformat()
-            ),
-            "mode": self.get_mode(),
+            "risk": risk,
+            "recommendation": recommendation,
         }
-
-        opp["analysis"] = analysis
-
-        opp["status"] = "ANALYSED"
-
-        opp["updated_at"] = (
-            datetime.utcnow().isoformat()
-        )
-
-        self.memory.save()
 
         self.memory.log(
             "Economy",
-            f"Analysed opportunity #{opp_id}",
+            (
+                f"Analysed opportunity "
+                f"#{opp_id}: "
+                f"{recommendation}"
+            ),
         )
 
         return analysis
 
-    # ================================================================
+    # ---------------------------------------------------------
     # EXPERIMENTS
-    # ================================================================
+    # ---------------------------------------------------------
 
     def create_experiment(
         self,
         opp_id: int,
         budget: float,
         notes: str = "",
-    ) -> Optional[Dict]:
+    ) -> Dict[str, Any]:
 
-        opp = self.get_opportunity(opp_id)
-
-        if not opp:
-            return None
-
-        exp_id = (
-            self.memory.data["economy"]
-            ["next_experiment_id"]
+        opportunity = self.get_opportunity(
+            opp_id
         )
 
-        self.memory.data["economy"][
-            "next_experiment_id"
-        ] += 1
+        if not opportunity:
+            return {
+                "success": False,
+                "error": (
+                    f"Opportunity #{opp_id} "
+                    "not found."
+                ),
+            }
+
+        experiments = self.memory.data[
+            "world_state"
+        ].setdefault(
+            "experiments",
+            [],
+        )
+
+        next_id = 1
+
+        if experiments:
+            ids = []
+
+            for item in experiments:
+                try:
+                    ids.append(
+                        int(item.get("id", 0))
+                    )
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    continue
+
+            if ids:
+                next_id = max(ids) + 1
 
         experiment = {
-            "id": exp_id,
-            "opportunity_id": opp_id,
-            "budget": float(budget),
-            "status": "RUNNING",
-            "revenue": 0.0,
-            "expenses": float(budget),
-            "profit": 0.0,
-            "mode": self.get_mode(),
-            "started_at": (
-                datetime.utcnow().isoformat()
+            "id": next_id,
+            "opportunity_id": int(
+                opp_id
             ),
-            "completed_at": None,
+            "budget": float(budget),
             "notes": notes,
-            "results": {},
+            "status": "planned",
+            "revenue": 0.0,
+            "extra_expenses": 0.0,
+            "profit": 0.0,
+            "created_at": self._timestamp(),
+            "completed_at": None,
         }
 
-        self.memory.data["economy"][
-            "experiments"
-        ].append(experiment)
-
-        self.update_opportunity_status(
-            opp_id,
-            "TESTING",
-            f"Experiment #{exp_id} started",
+        experiments.append(
+            experiment
         )
 
         self.memory.save()
@@ -509,13 +472,66 @@ class Economy:
         self.memory.log(
             "Economy",
             (
-                f"Started experiment #{exp_id} "
-                f"for opportunity #{opp_id} "
-                f"[{self.get_mode()}]"
+                f"Experiment created: "
+                f"#{next_id} for opportunity "
+                f"#{opp_id}"
             ),
         )
 
-        return experiment
+        return {
+            "success": True,
+            "experiment": experiment,
+        }
+
+    def get_experiment(
+        self,
+        exp_id: int,
+    ) -> Optional[Dict[str, Any]]:
+
+        for experiment in self.memory.data[
+            "world_state"
+        ].get(
+            "experiments",
+            [],
+        ):
+            try:
+                current_id = int(
+                    experiment.get(
+                        "id",
+                        -1,
+                    )
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if current_id == int(exp_id):
+                return experiment
+
+        return None
+
+    def list_experiments(
+        self,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+
+        experiments = self.memory.data[
+            "world_state"
+        ].get(
+            "experiments",
+            [],
+        )
+
+        if status:
+            experiments = [
+                item
+                for item in experiments
+                if item.get("status") == status
+            ]
+
+        return experiments
 
     def complete_experiment(
         self,
@@ -523,238 +539,160 @@ class Economy:
         revenue: float,
         extra_expenses: float = 0.0,
         notes: str = "",
-    ) -> Optional[Dict]:
+    ) -> Dict[str, Any]:
 
-        for exp in self.memory.data["economy"][
-            "experiments"
-        ]:
+        experiment = self.get_experiment(
+            exp_id
+        )
 
-            if exp["id"] != exp_id:
-                continue
-
-            exp["revenue"] = float(revenue)
-
-            exp["expenses"] += float(
-                extra_expenses
-            )
-
-            exp["profit"] = (
-                exp["revenue"]
-                - exp["expenses"]
-            )
-
-            exp["status"] = "COMPLETED"
-
-            exp["completed_at"] = (
-                datetime.utcnow().isoformat()
-            )
-
-            if notes:
-                existing_notes = exp.get(
-                    "notes",
-                    "",
-                )
-
-                if existing_notes:
-                    exp["notes"] = (
-                        existing_notes
-                        + " | "
-                        + notes
-                    )
-                else:
-                    exp["notes"] = notes
-
-            if exp["profit"] > 0:
-
-                self.update_opportunity_status(
-                    exp["opportunity_id"],
-                    "VALIDATED",
-                    (
-                        f"Experiment #{exp_id} "
-                        "profitable"
-                    ),
-                )
-
-            else:
-
-                self.update_opportunity_status(
-                    exp["opportunity_id"],
-                    "REJECTED",
-                    (
-                        f"Experiment #{exp_id} "
-                        "unprofitable"
-                    ),
-                )
-
-            self.memory.save()
-
-            self.memory.log(
-                "Economy",
-                (
-                    f"Completed experiment #{exp_id} "
-                    f"| Profit: {exp['profit']}"
+        if not experiment:
+            return {
+                "success": False,
+                "error": (
+                    f"Experiment #{exp_id} "
+                    "not found."
                 ),
+            }
+
+        if experiment.get("status") == "completed":
+            return {
+                "success": False,
+                "error": (
+                    f"Experiment #{exp_id} "
+                    "has already been completed."
+                ),
+            }
+
+        revenue = float(revenue)
+        extra_expenses = float(
+            extra_expenses
+        )
+
+        budget = float(
+            experiment.get(
+                "budget",
+                0,
+            )
+        )
+
+        profit = (
+            revenue
+            - budget
+            - extra_expenses
+        )
+
+        experiment["revenue"] = revenue
+        experiment[
+            "extra_expenses"
+        ] = extra_expenses
+        experiment["profit"] = profit
+        experiment["status"] = "completed"
+        experiment["completed_at"] = (
+            self._timestamp()
+        )
+
+        if notes:
+            experiment["completion_notes"] = (
+                notes
             )
 
-            return exp
+        self.memory.save()
 
-        return None
+        self.memory.log(
+            "Economy",
+            (
+                f"Experiment #{exp_id} "
+                f"completed. Profit: "
+                f"£{profit:.2f}"
+            ),
+        )
 
-    def get_experiment(
-        self,
-        exp_id: int,
-    ) -> Optional[Dict]:
+        return {
+            "success": True,
+            "experiment": experiment,
+            "profit": profit,
+        }
 
-        for exp in self.memory.data["economy"][
-            "experiments"
-        ]:
-            if exp["id"] == exp_id:
-                return exp
-
-        return None
-
-    def list_experiments(
-        self,
-        status: Optional[str] = None,
-    ) -> List[Dict]:
-
-        exps = self.memory.data["economy"][
-            "experiments"
-        ]
-
-        if status:
-            exps = [
-                e
-                for e in exps
-                if e["status"] == status
-            ]
-
-        return exps
-
-    # ================================================================
-    # REPORTING
-    # ================================================================
+    # ---------------------------------------------------------
+    # REPORT
+    # ---------------------------------------------------------
 
     def get_economy_report(
         self,
     ) -> Dict[str, Any]:
 
-        opps = self.list_opportunities()
+        opportunities = self.list_opportunities()
+        experiments = self.list_experiments()
 
-        exps = self.list_experiments()
+        analysed = []
+
+        for opportunity in opportunities:
+            analysed.append(
+                self.analyse_opportunity(
+                    opportunity["id"]
+                )
+            )
 
         total_revenue = sum(
-            e["revenue"]
-            for e in exps
+            float(
+                item.get(
+                    "revenue",
+                    0,
+                )
+            )
+            for item in experiments
+            if item.get("status")
+            == "completed"
         )
 
         total_expenses = sum(
-            e["expenses"]
-            for e in exps
+            float(
+                item.get(
+                    "budget",
+                    0,
+                )
+            )
+            + float(
+                item.get(
+                    "extra_expenses",
+                    0,
+                )
+            )
+            for item in experiments
+            if item.get("status")
+            == "completed"
         )
 
-        total_profit = (
+        realised_profit = (
             total_revenue
             - total_expenses
         )
 
-        policy = self.get_mode_policy()
-
         return {
-            "mode": self.get_mode().upper(),
-
-            "simulation": policy[
-                "simulation"
-            ],
-
-            "live": policy[
-                "live"
-            ],
-
-            "live_tools_available": policy[
-                "live_tools_available"
-            ],
-
-            "creator_approval_required": policy[
-                "creator_approval_required"
-            ],
-
-            "opportunities_total": len(
-                opps
+            "mode": self.get_mode(),
+            "policy": self.get_mode_policy(),
+            "opportunities": opportunities,
+            "opportunity_count": len(
+                opportunities
             ),
-
-            "opportunities_by_status": {
-                "DISCOVERED": len(
-                    [
-                        o
-                        for o in opps
-                        if o["status"]
-                        == "DISCOVERED"
-                    ]
-                ),
-
-                "ANALYSED": len(
-                    [
-                        o
-                        for o in opps
-                        if o["status"]
-                        == "ANALYSED"
-                    ]
-                ),
-
-                "TESTING": len(
-                    [
-                        o
-                        for o in opps
-                        if o["status"]
-                        == "TESTING"
-                    ]
-                ),
-
-                "VALIDATED": len(
-                    [
-                        o
-                        for o in opps
-                        if o["status"]
-                        == "VALIDATED"
-                    ]
-                ),
-
-                "REJECTED": len(
-                    [
-                        o
-                        for o in opps
-                        if o["status"]
-                        == "REJECTED"
-                    ]
-                ),
-            },
-
-            "experiments_total": len(
-                exps
+            "analyses": analysed,
+            "experiments": experiments,
+            "experiment_count": len(
+                experiments
             ),
-
-            "total_revenue": round(
-                total_revenue,
-                2,
-            ),
-
-            "total_expenses": round(
-                total_expenses,
-                2,
-            ),
-
-            "total_profit": round(
-                total_profit,
-                2,
-            ),
-
-            "active_experiments": len(
+            "completed_experiments": len(
                 [
-                    e
-                    for e in exps
-                    if e["status"]
-                    == "RUNNING"
+                    item
+                    for item in experiments
+                    if item.get("status")
+                    == "completed"
                 ]
             ),
+            "total_revenue": total_revenue,
+            "total_expenses": total_expenses,
+            "realised_profit": realised_profit,
         }
+
+    @staticmethod
+    def _timestamp() -> str:
+        return datetime.utcnow().isoformat()
