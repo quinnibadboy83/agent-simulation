@@ -860,4 +860,335 @@ async function loadApprovals() {
                     item.payload ||
                     {};
 
-                const
+                const pending =
+                    String(status).toLowerCase() ===
+                    "pending";
+
+                return `
+                    <div class="approval ${
+                        pending ? "pending" : ""
+                    }">
+                        <div class="approval-title">
+                            ${escapeHtml(action)}
+                        </div>
+
+                        <div class="approval-meta">
+                            ID:
+                            ${escapeHtml(id)}
+                            <br>
+                            AGENT:
+                            ${escapeHtml(agent)}
+                            <br>
+                            RISK:
+                            ${escapeHtml(risk)}
+                            <br>
+                            STATUS:
+                            ${escapeHtml(status)}
+                        </div>
+
+                        <div style="margin-top: 7px;">
+                            ${escapeHtml(description)}
+                        </div>
+
+                        ${
+                            plan
+                                ? `
+                                    <div class="approval-plan">
+                                        PLAN:
+                                        ${escapeHtml(
+                                            typeof plan === "string"
+                                                ? plan
+                                                : formatJson(plan)
+                                        )}
+                                    </div>
+                                `
+                                : ""
+                        }
+
+                        <div
+                            class="approval-plan"
+                            style="color: var(--muted);"
+                        >
+                            PARAMETERS:
+                            ${escapeHtml(
+                                formatJson(parameters)
+                            )}
+                        </div>
+
+                        ${
+                            pending
+                                ? `
+                                    <div class="approval-actions">
+                                        <button
+                                            onclick="decideApproval(
+                                                '${escapeHtml(id)}',
+                                                'approve'
+                                            )"
+                                        >
+                                            Approve
+                                        </button>
+
+                                        <button
+                                            class="danger"
+                                            onclick="decideApproval(
+                                                '${escapeHtml(id)}',
+                                                'deny'
+                                            )"
+                                        >
+                                            Deny
+                                        </button>
+                                    </div>
+                                `
+                                : ""
+                        }
+                    </div>
+                `;
+            }).join("");
+
+    } catch (error) {
+        $("approvals").innerHTML =
+            `<div class="error">
+                APPROVAL ERROR:
+                ${escapeHtml(error.message)}
+            </div>`;
+    }
+}
+
+async function decideApproval(id, decision) {
+    const reason =
+        window.prompt(
+            decision === "approve"
+                ? "Approval note (optional):"
+                : "Reason for denial (optional):",
+            ""
+        );
+
+    if (reason === null) {
+        return;
+    }
+
+    try {
+        const body =
+            new URLSearchParams();
+
+        body.set("reason", reason);
+
+        const data = await api(
+            `/api/approvals/${encodeURIComponent(id)}/${decision}`,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type":
+                        "application/x-www-form-urlencoded"
+                },
+                body
+            }
+        );
+
+        $("system-output").textContent =
+            formatJson(data);
+
+        await loadApprovals();
+
+    } catch (error) {
+        $("system-output").textContent =
+            `APPROVAL ERROR: ${error.message}`;
+    }
+}
+
+async function setOperatingMode(mode) {
+    const target =
+        mode === "live"
+            ? "live"
+            : "simulation";
+
+    if (target === "live") {
+        const confirmed =
+            window.confirm(
+                "Switch the system to REAL/LIVE mode?\n\n" +
+                "Protected consequential actions still require " +
+                "Creator approval."
+            );
+
+        if (!confirmed) {
+            return;
+        }
+    }
+
+    try {
+        const body =
+            new URLSearchParams();
+
+        body.set("mode", target);
+
+        const data = await api(
+            "/api/mode",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type":
+                        "application/x-www-form-urlencoded"
+                },
+                body
+            }
+        );
+
+        $("system-output").textContent =
+            formatJson(data);
+
+        await refreshStatus();
+        await loadApprovals();
+
+    } catch (error) {
+        $("system-output").textContent =
+            `MODE ERROR: ${error.message}`;
+    }
+}
+
+async function sendCommand() {
+    const input = $("command");
+    const command = input.value.trim();
+
+    if (!command) {
+        return;
+    }
+
+    input.value = "";
+
+    try {
+        const body =
+            new URLSearchParams();
+
+        body.set("command", command);
+
+        const data = await api(
+            "/command",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type":
+                        "application/x-www-form-urlencoded"
+                },
+                body
+            }
+        );
+
+        $("command-output").textContent =
+            formatJson(data);
+
+        await refreshStatus();
+        await loadAgents();
+        await loadApprovals();
+        await loadLogs();
+
+    } catch (error) {
+        $("command-output").textContent =
+            `COMMAND ERROR: ${error.message}`;
+    }
+}
+
+async function advanceTime() {
+    try {
+        const data = await api(
+            "/api/advance_time",
+            {
+                method: "POST"
+            }
+        );
+
+        $("system-output").textContent =
+            formatJson(data);
+
+        await refreshStatus();
+        await loadLogs();
+
+    } catch (error) {
+        $("system-output").textContent =
+            `TIME ERROR: ${error.message}`;
+    }
+}
+
+async function loadLogs() {
+    try {
+        const data = await api(
+            "/api/status"
+        );
+
+        const logs =
+            data.logs ||
+            data.runtime_logs ||
+            [];
+
+        if (!Array.isArray(logs) || !logs.length) {
+            $("logs").innerHTML =
+                '<div class="empty">No runtime logs.</div>';
+            return;
+        }
+
+        $("logs").innerHTML =
+            logs.slice(-80).reverse().map(log => {
+                if (typeof log === "string") {
+                    return `
+                        <div class="log-line">
+                            ${escapeHtml(log)}
+                        </div>
+                    `;
+                }
+
+                const timestamp =
+                    log.timestamp ||
+                    "";
+
+                const source =
+                    log.source ||
+                    log.agent ||
+                    "SYSTEM";
+
+                const message =
+                    log.message ||
+                    log.text ||
+                    "";
+
+                return `
+                    <div class="log-line">
+                        <strong>
+                            ${escapeHtml(timestamp)}
+                        </strong>
+                        [${escapeHtml(source)}]
+                        ${escapeHtml(message)}
+                    </div>
+                `;
+            }).join("");
+
+    } catch {
+        $("logs").innerHTML =
+            '<div class="empty">Log unavailable.</div>';
+    }
+}
+
+$("command").addEventListener(
+    "keydown",
+    event => {
+        if (event.key === "Enter") {
+            sendCommand();
+        }
+    }
+);
+
+async function refreshAll() {
+    await refreshStatus();
+    await loadAgents();
+    await loadApprovals();
+    await loadLogs();
+}
+
+refreshAll();
+
+setInterval(
+    refreshAll,
+    5000
+);
+</script>
+
+</body>
+</html>
