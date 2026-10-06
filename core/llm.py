@@ -13,14 +13,27 @@ class LLMError(Exception):
 
 class LLMClient:
     """
-    Model-independent LLM client.
+    Provider-independent asynchronous LLM client.
 
-    The initial implementation targets an OpenAI-compatible endpoint,
-    which is provided by llama.cpp's llama-server.
+    The client communicates with an OpenAI-compatible /chat/completions
+    endpoint.
 
-    This means the agent system does not depend on a particular model.
-    Qwen, another GGUF model, or a future stronger model can be placed
-    behind the same interface.
+    This allows the agent architecture to work with:
+
+        - llama.cpp / llama-server
+        - Qwen GGUF models
+        - Llama GGUF models
+        - Gemma GGUF models
+        - remote OpenAI-compatible inference servers
+        - other compatible open-source model servers
+
+    The LLM itself does not receive authority to bypass application
+    security.
+
+    Model output becomes a requested action.
+
+    ToolRegistry and ApprovalGate decide whether that action can actually
+    execute.
     """
 
     def __init__(
@@ -38,7 +51,17 @@ class LLMClient:
             "/chat/completions"
         )
 
+    def models_endpoint(self) -> str:
+        return (
+            f"{self.config.base_url}"
+            "/models"
+        )
+
     async def health(self) -> Dict[str, Any]:
+        """
+        Check whether the configured model server is reachable.
+        """
+
         if not self.config.enabled:
             return {
                 "status": "disabled",
@@ -46,26 +69,48 @@ class LLMClient:
                 "model": self.config.model,
             }
 
-        url = f"{self.config.base_url}/models"
-
         try:
             async with httpx.AsyncClient(
                 timeout=self.config.timeout
             ) as client:
                 response = await client.get(
-                    url,
+                    self.models_endpoint(),
                     headers=self._headers(),
                 )
 
             response.raise_for_status()
 
-            data = response.json()
+            try:
+                data = response.json()
+            except ValueError:
+                data = {
+                    "raw_response": response.text[:2000]
+                }
 
             return {
                 "status": "ready",
                 "provider": self.config.provider,
                 "model": self.config.model,
                 "server": data,
+            }
+
+        except httpx.TimeoutException:
+            return {
+                "status": "unavailable",
+                "provider": self.config.provider,
+                "model": self.config.model,
+                "error": (
+                    f"Model server timed out after "
+                    f"{self.config.timeout} seconds."
+                ),
+            }
+
+        except httpx.HTTPError as exc:
+            return {
+                "status": "unavailable",
+                "provider": self.config.provider,
+                "model": self.config.model,
+                "error": str(exc),
             }
 
         except Exception as exc:
@@ -83,11 +128,30 @@ class LLMClient:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
+        """
+        Send a chat completion request.
+
+        Tool definitions are supplied to the model as capabilities.
+
+        IMPORTANT:
+
+        A model requesting a tool does NOT mean that the tool is
+        automatically permitted to execute.
+
+        The returned tool call must pass through the application's
+        ToolRegistry and, where necessary, Creator ApprovalGate.
+        """
 
         if not self.config.enabled:
             raise LLMError(
                 "LLM brain is disabled. "
-                "Set BRAIN_ENABLED=true and configure the model server."
+                "Set BRAIN_ENABLED=true and configure "
+                "BRAIN_BASE_URL and BRAIN_MODEL."
+            )
+
+        if not messages:
+            raise LLMError(
+                "Cannot send an empty message list to the LLM."
             )
 
         payload: Dict[str, Any] = {
@@ -121,23 +185,31 @@ class LLMClient:
 
             if response.status_code >= 400:
                 raise LLMError(
-                    f"LLM server returned HTTP "
+                    "LLM server returned HTTP "
                     f"{response.status_code}: "
-                    f"{response.text[:2000]}"
+                    f"{response.text[:4000]}"
                 )
 
-            data = response.json()
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise LLMError(
+                    "LLM server returned invalid JSON."
+                ) from exc
 
             if not isinstance(data, dict):
                 raise LLMError(
-                    "LLM server returned an invalid response."
+                    "LLM server returned an invalid response object."
                 )
 
             return data
 
+        except LLMError:
+            raise
+
         except httpx.TimeoutException as exc:
             raise LLMError(
-                f"LLM request timed out after "
+                "LLM request timed out after "
                 f"{self.config.timeout} seconds."
             ) from exc
 
@@ -146,11 +218,19 @@ class LLMClient:
                 f"LLM HTTP connection failed: {exc}"
             ) from exc
 
+        except Exception as exc:
+            raise LLMError(
+                f"Unexpected LLM client error: {exc}"
+            ) from exc
+
     async def simple_chat(
         self,
         system: str,
         user: str,
     ) -> str:
+        """
+        Convenience method for a normal text response.
+        """
 
         result = await self.chat(
             messages=[
@@ -171,10 +251,16 @@ class LLMClient:
     def extract_text(
         response: Dict[str, Any],
     ) -> str:
+        """
+        Extract assistant text from an OpenAI-compatible response.
+        """
 
         choices = response.get("choices")
 
-        if not isinstance(choices, list) or not choices:
+        if not isinstance(choices, list):
+            return ""
+
+        if not choices:
             return ""
 
         first = choices[0]
@@ -195,16 +281,41 @@ class LLMClient:
         if isinstance(content, str):
             return content
 
+        # Some compatible providers return structured content.
+        if isinstance(content, list):
+            parts: List[str] = []
+
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                    continue
+
+                if not isinstance(item, dict):
+                    continue
+
+                text = item.get("text")
+
+                if isinstance(text, str):
+                    parts.append(text)
+
+            return "".join(parts)
+
         return str(content)
 
     @staticmethod
     def extract_tool_calls(
         response: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
+        """
+        Extract model-requested tool calls.
+        """
 
         choices = response.get("choices")
 
-        if not isinstance(choices, list) or not choices:
+        if not isinstance(choices, list):
+            return []
+
+        if not choices:
             return []
 
         first = choices[0]
@@ -228,10 +339,70 @@ class LLMClient:
             if isinstance(call, dict)
         ]
 
+    @staticmethod
+    def extract_finish_reason(
+        response: Dict[str, Any],
+    ) -> Optional[str]:
+        """
+        Extract the provider's finish reason when available.
+        """
+
+        choices = response.get("choices")
+
+        if not isinstance(choices, list):
+            return None
+
+        if not choices:
+            return None
+
+        first = choices[0]
+
+        if not isinstance(first, dict):
+            return None
+
+        value = first.get("finish_reason")
+
+        if value is None:
+            return None
+
+        return str(value)
+
+    @staticmethod
+    def extract_usage(
+        response: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Extract token usage information when supplied by the provider.
+        """
+
+        usage = response.get("usage")
+
+        if not isinstance(usage, dict):
+            return {}
+
+        return usage
+
     def _headers(self) -> Dict[str, str]:
-        return {
-            "Authorization": (
-                f"Bearer {self.config.api_key}"
-            ),
+        """
+        Build HTTP headers.
+
+        Local llama.cpp servers normally do not require authentication.
+
+        Remote providers may require a bearer token.
+        """
+
+        headers: Dict[str, str] = {
             "Content-Type": "application/json",
+            "Accept": "application/json",
         }
+
+        api_key = (
+            self.config.api_key or ""
+        ).strip()
+
+        if api_key:
+            headers["Authorization"] = (
+                f"Bearer {api_key}"
+            )
+
+        return headers
