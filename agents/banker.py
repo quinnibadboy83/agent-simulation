@@ -2,17 +2,17 @@
 Banker Agent
 ------------
 
-Financial Controller for the agent simulation.
+Financial controller for the agent system.
 
 The Banker:
-- monitors the shared balance
-- records financial activity
+- monitors balances
 - reports transactions
-- does not bypass the Creator approval system
-- does not directly execute consequential financial actions
+- maintains financial awareness
+- can create simulated financial records
+- cannot bypass Creator approval for consequential actions
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, Optional
 
 from .base_agent import BaseAgent
 from core.memory import SharedMemory
@@ -20,7 +20,6 @@ from core.tools import ToolRegistry
 
 
 class BankerAgent(BaseAgent):
-
     def __init__(
         self,
         memory: SharedMemory,
@@ -32,118 +31,144 @@ class BankerAgent(BaseAgent):
             memory=memory,
             tools=tools,
             description=(
-                "Manages financial records, "
-                "monitors balances and reports "
-                "income and expenses."
+                "Tracks balances, transactions "
+                "and financial state."
+            ),
+            identity=(
+                "You are Banker, the financial controller "
+                "of the agent system. You monitor money, "
+                "maintain accurate records and report "
+                "financial state. You never fabricate "
+                "transactions and never bypass Creator "
+                "approval."
             ),
         )
 
-        self.update_status("ready")
-
-        # Open the Banker account only when one
-        # does not already exist.
-        if not self._has_transactions():
-            memory.add_transaction(
-                0.0,
-                "System",
-                "Banker",
-                "Initial account opened",
-            )
-
-    # ------------------------------------------------------------------
-    # Orders
-    # ------------------------------------------------------------------
+    # ======================================================
+    # COMMAND PROCESSING
+    # ======================================================
 
     def process_order(
         self,
-        order: str,
-    ) -> str:
+        command: str,
+    ) -> Any:
 
-        self.memory.log(
-            "Banker",
-            f"Received order: {order}",
+        command = str(command).strip()
+
+        if not command:
+            return self.get_help()
+
+        self.perceive(
+            command,
+            source="boss",
         )
 
-        order_text = order.strip()
-        order_lower = order_text.lower()
+        lowered = command.lower()
 
-        if not order_text:
-            return (
-                "Banker needs a financial instruction."
-            )
+        # --------------------------------------------------
+        # HELP
+        # --------------------------------------------------
 
-        # --------------------------------------------------------------
-        # Balance
-        # --------------------------------------------------------------
+        if lowered in {
+            "help",
+            "?",
+        }:
+            return self.get_help()
+
+        # --------------------------------------------------
+        # BALANCE
+        # --------------------------------------------------
 
         if (
-            "balance" in order_lower
-            or "money" in order_lower
+            lowered == "balance"
+            or lowered == "money"
+            or lowered == "funds"
         ):
             return self._balance_report()
 
-        # --------------------------------------------------------------
-        # Report
-        # --------------------------------------------------------------
-
-        if "report" in order_lower:
-            return self._financial_report()
-
-        # --------------------------------------------------------------
-        # Transactions
-        # --------------------------------------------------------------
+        # --------------------------------------------------
+        # REPORT
+        # --------------------------------------------------
 
         if (
-            "transaction" in order_lower
-            or "transactions" in order_lower
-            or "ledger" in order_lower
+            lowered in {
+                "report",
+                "financial report",
+                "finance",
+                "financial status",
+            }
+        ):
+            return self._financial_report()
+
+        # --------------------------------------------------
+        # TRANSACTIONS
+        # --------------------------------------------------
+
+        if (
+            lowered.startswith(
+                "transactions"
+            )
+            or lowered.startswith(
+                "transaction"
+            )
+            or lowered == "ledger"
         ):
             return self._transaction_report()
 
-        # --------------------------------------------------------------
-        # Allowance
-        # --------------------------------------------------------------
+        # --------------------------------------------------
+        # ALLOWANCE
+        # --------------------------------------------------
 
-        if "allowance" in order_lower:
-            return (
-                "Allowance system ready.\n"
-                "Financial actions remain subject "
-                "to the Creator approval system."
+        if (
+            lowered.startswith(
+                "allowance"
             )
+            or lowered.startswith(
+                "budget"
+            )
+        ):
+            return self._allowance_report()
 
-        return (
-            f"Banker acknowledging order: "
-            f"'{order_text}'.\n"
-            "Try: balance, report, "
-            "transactions or allowance."
+        # --------------------------------------------------
+        # STATUS
+        # --------------------------------------------------
+
+        if lowered == "status":
+            return self.get_status_report()
+
+        # --------------------------------------------------
+        # GENERIC FINANCIAL REASONING
+        # --------------------------------------------------
+
+        return self.run_cycle(
+            command
         )
 
-    # ------------------------------------------------------------------
-    # Balance
-    # ------------------------------------------------------------------
+    # ======================================================
+    # REPORTS
+    # ======================================================
 
     def _balance_report(
         self,
-    ) -> str:
+    ) -> Dict[str, Any]:
 
         balance = self.memory.get_balance(
             "Banker"
         )
 
-        return (
-            "Banker Balance\n"
-            "--------------\n"
-            f"Current Balance: "
-            f"${balance:.2f}"
-        )
-
-    # ------------------------------------------------------------------
-    # Financial report
-    # ------------------------------------------------------------------
+        return {
+            "success": True,
+            "agent": self.name,
+            "balance": balance,
+            "currency": "GBP",
+            "formatted": (
+                f"£{balance:.2f}"
+            ),
+        }
 
     def _financial_report(
         self,
-    ) -> str:
+    ) -> Dict[str, Any]:
 
         balance = self.memory.get_balance(
             "Banker"
@@ -154,8 +179,8 @@ class BankerAgent(BaseAgent):
             [],
         )
 
-        income = 0.0
-        expenses = 0.0
+        incoming = 0.0
+        outgoing = 0.0
 
         for transaction in transactions:
 
@@ -166,109 +191,180 @@ class BankerAgent(BaseAgent):
                 )
             )
 
-            if transaction.get("to") == "Banker":
-                income += amount
+            if transaction.get(
+                "to"
+            ) == "Banker":
+                incoming += amount
 
-            if transaction.get("from") == "Banker":
-                expenses += amount
+            if transaction.get(
+                "from"
+            ) == "Banker":
+                outgoing += amount
 
-        return (
-            "=== BANKER REPORT ===\n"
-            f"Current Balance: ${balance:.2f}\n"
-            f"Total Inflows:   ${income:.2f}\n"
-            f"Total Outflows:  ${expenses:.2f}\n"
-            f"Transactions:    {len(transactions)}"
-        )
-
-    # ------------------------------------------------------------------
-    # Transaction report
-    # ------------------------------------------------------------------
+        return {
+            "success": True,
+            "agent": self.name,
+            "currency": "GBP",
+            "balance": balance,
+            "incoming": incoming,
+            "outgoing": outgoing,
+            "transaction_count": len(
+                transactions
+            ),
+            "net_flow": (
+                incoming - outgoing
+            ),
+        }
 
     def _transaction_report(
         self,
-    ) -> str:
+    ) -> Dict[str, Any]:
 
         transactions = self.memory.data.get(
             "transactions",
             [],
         )
 
-        if not transactions:
-            return (
-                "No financial transactions recorded."
-            )
+        return {
+            "success": True,
+            "agent": self.name,
+            "count": len(
+                transactions
+            ),
+            "transactions": transactions[
+                -50:
+            ],
+        }
 
-        recent = transactions[-10:]
-
-        report = (
-            "Recent Transactions\n"
-            "--------------------\n"
-        )
-
-        for transaction in recent:
-
-            timestamp = str(
-                transaction.get(
-                    "timestamp",
-                    "",
-                )
-            )[:16]
-
-            amount = float(
-                transaction.get(
-                    "amount",
-                    0.0,
-                )
-            )
-
-            sender = transaction.get(
-                "from",
-                "Unknown",
-            )
-
-            receiver = transaction.get(
-                "to",
-                "Unknown",
-            )
-
-            reason = transaction.get(
-                "reason",
-                "",
-            )
-
-            report += (
-                f"{timestamp} | "
-                f"{amount:+.2f} | "
-                f"{sender} -> {receiver} | "
-                f"{reason}\n"
-            )
-
-        return report
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _has_transactions(
+    def _allowance_report(
         self,
-    ) -> bool:
+    ) -> Dict[str, Any]:
 
-        transactions = self.memory.data.get(
-            "transactions",
-            [],
+        balance = self.memory.get_balance(
+            "Banker"
         )
 
-        for transaction in transactions:
-            if (
-                transaction.get("to")
-                == "Banker"
-            ):
-                return True
+        return {
+            "success": True,
+            "agent": self.name,
+            "available_balance": balance,
+            "currency": "GBP",
+            "note": (
+                "Consequential spending requires "
+                "an exact Creator-approved action."
+            ),
+        }
 
-            if (
-                transaction.get("from")
-                == "Banker"
-            ):
-                return True
+    # ======================================================
+    # FINANCIAL OPERATIONS
+    # ======================================================
 
-        return False
+    def record_simulated_income(
+        self,
+        amount: float,
+        source: str,
+        reason: str = "",
+    ):
+
+        amount = float(amount)
+
+        if amount <= 0:
+            return {
+                "success": False,
+                "error": (
+                    "Income must be greater than zero."
+                ),
+            }
+
+        transaction = (
+            self.memory.add_transaction(
+                amount=amount,
+                from_agent=source,
+                to_agent="Banker",
+                reason=(
+                    reason
+                    or "Simulated income"
+                ),
+            )
+        )
+
+        return {
+            "success": True,
+            "transaction": transaction,
+            "balance": (
+                self.memory.get_balance(
+                    "Banker"
+                )
+            ),
+        }
+
+    def record_simulated_expense(
+        self,
+        amount: float,
+        recipient: str,
+        reason: str = "",
+    ):
+
+        amount = float(amount)
+
+        if amount <= 0:
+            return {
+                "success": False,
+                "error": (
+                    "Expense must be greater than zero."
+                ),
+            }
+
+        balance = self.memory.get_balance(
+            "Banker"
+        )
+
+        if amount > balance:
+            return {
+                "success": False,
+                "error": (
+                    "Insufficient simulated funds."
+                ),
+                "balance": balance,
+            }
+
+        transaction = (
+            self.memory.add_transaction(
+                amount=amount,
+                from_agent="Banker",
+                to_agent=recipient,
+                reason=(
+                    reason
+                    or "Simulated expense"
+                ),
+            )
+        )
+
+        return {
+            "success": True,
+            "transaction": transaction,
+            "balance": (
+                self.memory.get_balance(
+                    "Banker"
+                )
+            ),
+        }
+
+    # ======================================================
+    # STATUS / HELP
+    # ======================================================
+
+    def get_help(self):
+
+        return (
+            "Banker commands:\n"
+            "balance\n"
+            "report\n"
+            "transactions\n"
+            "ledger\n"
+            "allowance\n"
+            "status\n\n"
+            "The Banker tracks financial state. "
+            "Consequential spending requires "
+            "Creator approval."
+        )
