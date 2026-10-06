@@ -2,18 +2,18 @@
 Boss Agent
 ----------
 
-Primary commander of the agent simulation.
+Overseer of the autonomous agent system.
 
 The Boss:
-
-    - receives Creator commands
-    - coordinates other agents
-    - performs research
-    - manages tasks
-    - monitors the economy
-    - creates content drafts
-    - uses the central ToolRegistry
+- receives Creator commands
+- delegates work
+- monitors other agents
+- can inspect the economy
+- can request protected actions
+- cannot bypass Creator approval
 """
+
+from typing import Any, Dict, List
 
 from .base_agent import BaseAgent
 from core.memory import SharedMemory
@@ -29,21 +29,21 @@ class BossAgent(BaseAgent):
     ):
         super().__init__(
             name="Boss",
-            role="Super Overseer",
+            role="Overseer",
             memory=memory,
             tools=tools,
             description=(
-                "The main commander. "
-                "You control this agent."
+                "Oversees the agent system, "
+                "delegates objectives, monitors "
+                "progress and coordinates the "
+                "other agents."
             ),
         )
 
-        self.update_status(
-            "awaiting_orders"
-        )
+        self.update_status("ready")
 
     # ------------------------------------------------------------------
-    # Commands
+    # Main command interface
     # ------------------------------------------------------------------
 
     def process_command(
@@ -51,463 +51,403 @@ class BossAgent(BaseAgent):
         command: str,
     ) -> str:
 
-        command = str(
-            command or ""
-        ).strip()
+        command_text = command.strip()
 
-        if not command:
-            return (
-                "Boss is awaiting a command."
-            )
-
-        cmd = command.lower()
+        if not command_text:
+            return "Boss received an empty command."
 
         self.memory.log(
             "Boss",
-            f"Received command: {command}",
+            f"Creator command received: {command_text}",
         )
 
-        if cmd in {
-            "status",
-            "report",
-            "overview",
-        }:
-            return self.full_status_report()
+        self.perceive(
+            command_text,
+            source="creator",
+        )
+
+        self.remember(
+            command_text,
+            category="creator_command",
+        )
+
+        command_lower = command_text.lower()
+
+        # --------------------------------------------------------------
+        # Help
+        # --------------------------------------------------------------
 
         if (
-            cmd.startswith("assign ")
-            or cmd.startswith("task ")
+            command_lower == "help"
+            or command_lower.startswith("help ")
         ):
-            return self._handle_assign(
-                command
-            )
+            return self._help()
 
-        if cmd in {
-            "balance",
-            "funds",
-        }:
-            result = self.execute_tool(
+        # --------------------------------------------------------------
+        # Status
+        # --------------------------------------------------------------
+
+        if (
+            command_lower == "status"
+            or "system status" in command_lower
+        ):
+            return self._system_status()
+
+        # --------------------------------------------------------------
+        # Agent status
+        # --------------------------------------------------------------
+
+        if (
+            "agent status" in command_lower
+            or command_lower == "agents"
+            or command_lower == "agent status"
+        ):
+            return self._agent_status()
+
+        # --------------------------------------------------------------
+        # Balance
+        # --------------------------------------------------------------
+
+        if (
+            "balance" in command_lower
+            or "banker report" in command_lower
+        ):
+            return self.execute_tool(
                 "check_balance"
-            )
-
-            balance = result.get(
-                "result",
-                {},
             ).get(
-                "balance",
-                0,
+                "result",
+                "Unable to retrieve balance.",
             )
 
-            return (
-                f"Current balance: "
-                f"${balance:.2f}"
-            )
+        # --------------------------------------------------------------
+        # Research delegation
+        # --------------------------------------------------------------
 
-        if cmd in {
-            "help",
-            "?",
-        }:
-            return self.get_command_help()
-
-        if cmd.startswith(
-            "say "
+        if (
+            command_lower.startswith("research ")
+            or command_lower.startswith("find information ")
+            or command_lower.startswith("search ")
         ):
-            message = command[
-                4:
-            ].strip()
-
-            self.memory.log(
-                "Boss",
-                f"Announcement: {message}",
+            topic = self._extract_after_prefix(
+                command_text,
+                [
+                    "research",
+                    "find information",
+                    "search",
+                ],
             )
-
-            return (
-                f"Announcement logged: "
-                f"{message}"
-            )
-
-        if cmd.startswith(
-            "make post"
-        ):
-            topic = command[
-                9:
-            ].strip()
-
-            topic = topic.replace(
-                "about",
-                "",
-                1,
-            ).strip()
 
             if not topic:
                 return (
-                    "Usage: make post about <topic>"
+                    "Specify a research topic."
                 )
 
-            return self.make_post(
+            return self._delegate_research(
                 topic
             )
 
-        if (
-            cmd.startswith("search ")
-            or cmd.startswith("web ")
-        ):
-            query = command.split(
-                " ",
-                1,
-            )[1]
-
-            return self._format_search(
-                query
-            )
-
-        if cmd.startswith(
-            "read "
-        ):
-            url = command.split(
-                " ",
-                1,
-            )[1]
-
-            if not url.startswith(
-                "http"
-            ):
-                return (
-                    "Please provide a full URL "
-                    "starting with http."
-                )
-
-            result = self.execute_tool(
-                "read_webpage",
-                url=url,
-            )
-
-            if not result.get(
-                "success"
-            ):
-                return (
-                    "Failed to read page: "
-                    f"{result.get('error')}"
-                )
-
-            page = result.get(
-                "result",
-                {},
-            )
-
-            return (
-                f"Page: "
-                f"{page.get('title', '')}\n\n"
-                f"{str(page.get('content', ''))[:2500]}"
-            )
+        # --------------------------------------------------------------
+        # Farming
+        # --------------------------------------------------------------
 
         if (
-            cmd.startswith("farm ")
-            or cmd.startswith("research ")
+            command_lower.startswith("farm ")
+            or "farm information" in command_lower
         ):
-            topic = command.split(
-                " ",
-                1,
-            )[1].strip()
+            topic = self._extract_after_prefix(
+                command_text,
+                [
+                    "farm information",
+                    "farm",
+                ],
+            )
 
-            return self.order_info_farmer(
+            if not topic:
+                return (
+                    "Specify what InfoFarmer "
+                    "should research."
+                )
+
+            return self._delegate_research(
                 topic
             )
 
+        # --------------------------------------------------------------
+        # Opportunity scanning
+        # --------------------------------------------------------------
+
         if (
-            cmd.startswith("money")
-            or cmd in {
-                "scan",
-                "opportunities",
-            }
+            "scan opportunities" in command_lower
+            or command_lower == "scan"
+            or "find opportunities" in command_lower
         ):
-            return self._handle_money_command(
-                command
+            return self._delegate_opportunities(
+                "scan"
             )
 
-        return self._brain_reason(
-            command
-        )
+        # --------------------------------------------------------------
+        # Opportunity listing
+        # --------------------------------------------------------------
+
+        if (
+            "list opportunities"
+            in command_lower
+            or command_lower == "opportunities"
+        ):
+            return self._delegate_opportunities(
+                "opportunities"
+            )
+
+        # --------------------------------------------------------------
+        # Economy report
+        # --------------------------------------------------------------
+
+        if (
+            "economy report" in command_lower
+            or command_lower == "economy"
+        ):
+            return self._delegate_opportunities(
+                "report"
+            )
+
+        # --------------------------------------------------------------
+        # Simulation / real mode
+        # --------------------------------------------------------------
+
+        if (
+            "simulation mode" in command_lower
+            or command_lower == "simulation"
+        ):
+            return self._delegate_opportunities(
+                "mode simulation"
+            )
+
+        if (
+            "real mode" in command_lower
+            or "live mode" in command_lower
+            or command_lower == "real"
+        ):
+            return self._delegate_opportunities(
+                "mode real"
+            )
+
+        # --------------------------------------------------------------
+        # Task creation
+        # --------------------------------------------------------------
+
+        if (
+            command_lower.startswith("task ")
+            or command_lower.startswith("assign ")
+        ):
+            return self._create_task_from_command(
+                command_text
+            )
+
+        # --------------------------------------------------------------
+        # Generic delegation
+        # --------------------------------------------------------------
+
+        if "banker" in command_lower:
+            return self._send_to_agent(
+                "Banker",
+                command_text,
+            )
+
+        if (
+            "infofarmer" in command_lower
+            or "researcher" in command_lower
+        ):
+            return self._send_to_agent(
+                "InfoFarmer",
+                command_text,
+            )
+
+        if (
+            "opportunity" in command_lower
+            or "scout" in command_lower
+        ):
+            return self._send_to_agent(
+                "OpportunityAgent",
+                command_text,
+            )
+
+        # --------------------------------------------------------------
+        # Standard cognitive cycle
+        # --------------------------------------------------------------
+
+        return self.run_cycle(
+            command_text
+        )["reasoning"]
 
     # ------------------------------------------------------------------
-    # Brain
+    # Delegation
     # ------------------------------------------------------------------
 
-    def _brain_reason(
-        self,
-        command: str,
-    ) -> str:
-
-        try:
-            from core.brain import ask_brain
-
-            result = ask_brain(
-                command
-            )
-
-            self.remember(
-                str(result),
-                "reasoning",
-            )
-
-            return str(
-                result
-            )
-
-        except Exception as exc:
-            self.memory.log(
-                "Boss",
-                f"Brain unavailable: {exc}",
-                level="warning",
-            )
-
-            return (
-                f"Boss received: '{command}'.\n"
-                "No external brain is currently "
-                "configured, so no autonomous "
-                "LLM reasoning was performed."
-            )
-
-    # ------------------------------------------------------------------
-    # Content
-    # ------------------------------------------------------------------
-
-    def make_post(
+    def _delegate_research(
         self,
         topic: str,
     ) -> str:
 
-        result = self.execute_tool(
-            "web_search",
-            query=topic,
-            max_results=3,
+        task = self.memory.add_task(
+            title=f"Research: {topic}",
+            description=(
+                f"Research and collect useful "
+                f"information about {topic}."
+            ),
+            assigned_to="InfoFarmer",
+            created_by="Boss",
         )
 
-        points = []
-
-        if result.get(
-            "success"
-        ):
-            for item in result.get(
-                "result",
-                [],
-            )[:3]:
-
-                title = item.get(
-                    "title",
-                    "",
-                )
-
-                snippet = item.get(
-                    "snippet",
-                    "",
-                )
-
-                if title:
-                    points.append(
-                        f"- {title}: "
-                        f"{snippet[:160]}"
-                    )
-
-        if not points:
-            points.append(
-                f"- Research point about {topic}"
-            )
-
-        caption = (
-            f"{topic.title()}\n\n"
-            "A few useful points:\n"
-            + "\n".join(points)
-            + "\n\n"
-            "This is a draft only. "
-            "Nothing has been published."
-        )
-
-        self.memory.add_knowledge(
-            source="Boss",
-            content=caption,
-            tags=[
-                "content",
-                "draft",
-                topic.lower(),
-            ],
+        self.memory.log(
+            "Boss",
+            (
+                f"Delegated research task "
+                f"#{task['id']} to InfoFarmer."
+            ),
         )
 
         return (
-            "CONTENT DRAFT\n\n"
-            f"{caption}"
+            f"Research task #{task['id']} "
+            f"assigned to InfoFarmer.\n"
+            f"Topic: {topic}"
         )
 
-    # ------------------------------------------------------------------
-    # Research
-    # ------------------------------------------------------------------
-
-    def _format_search(
-        self,
-        query: str,
-    ) -> str:
-
-        result = self.execute_tool(
-            "web_search",
-            query=query,
-            max_results=5,
-        )
-
-        if not result.get(
-            "success"
-        ):
-            return (
-                "Search failed: "
-                f"{result.get('error')}"
-            )
-
-        results = result.get(
-            "result",
-            [],
-        )
-
-        if not results:
-            return (
-                "No search results found."
-            )
-
-        response = (
-            f"Search results for "
-            f"'{query}':\n\n"
-        )
-
-        for index, item in enumerate(
-            results,
-            1,
-        ):
-            response += (
-                f"{index}. "
-                f"{item.get('title', '')}\n"
-                f"   {item.get('url', '')}\n"
-                f"   {item.get('snippet', '')[:180]}\n\n"
-            )
-
-        return response
-
-    # ------------------------------------------------------------------
-    # Economy
-    # ------------------------------------------------------------------
-
-    def _handle_money_command(
+    def _delegate_opportunities(
         self,
         command: str,
     ) -> str:
 
-        cmd = command.lower().strip()
+        task = self.memory.add_task(
+            title=(
+                f"Opportunity: {command}"
+            ),
+            description=(
+                f"OpportunityAgent should "
+                f"execute: {command}"
+            ),
+            assigned_to="OpportunityAgent",
+            created_by="Boss",
+        )
 
-        if cmd in {
-            "money",
-            "money help",
-        }:
-            return self.get_money_help()
+        self.memory.log(
+            "Boss",
+            (
+                f"Delegated opportunity task "
+                f"#{task['id']}."
+            ),
+        )
 
-        if "mode" in cmd:
+        return (
+            f"Opportunity task #{task['id']} "
+            f"assigned to OpportunityAgent.\n"
+            f"Instruction: {command}"
+        )
 
-            if "simulation" in cmd:
-                result = self.execute_tool(
-                    "money_mode",
-                    mode="simulation",
-                )
+    def _send_to_agent(
+        self,
+        agent_name: str,
+        command: str,
+    ) -> str:
 
-            elif "real" in cmd:
-                result = self.execute_tool(
-                    "money_mode",
-                    mode="real",
-                )
+        task = self.memory.add_task(
+            title=(
+                f"Boss instruction: "
+                f"{command[:60]}"
+            ),
+            description=command,
+            assigned_to=agent_name,
+            created_by="Boss",
+        )
 
-            else:
-                result = self.execute_tool(
-                    "money_mode"
-                )
+        self.memory.log(
+            "Boss",
+            (
+                f"Delegated task #{task['id']} "
+                f"to {agent_name}."
+            ),
+        )
 
-            return str(
-                result.get(
-                    "result",
-                    result,
-                )
-            )
+        return (
+            f"Task #{task['id']} assigned "
+            f"to {agent_name}."
+        )
 
-        if "report" in cmd:
+    # ------------------------------------------------------------------
+    # Task creation
+    # ------------------------------------------------------------------
 
-            result = self.execute_tool(
-                "economy_report"
-            )
+    def _create_task_from_command(
+        self,
+        command: str,
+    ) -> str:
 
-            if not result.get(
-                "success"
-            ):
-                return str(
-                    result
-                )
+        text = command.strip()
 
-            report = result[
-                "result"
-            ]
+        lower = text.lower()
 
+        if lower.startswith("task "):
+            remainder = text[5:].strip()
+        elif lower.startswith("assign "):
+            remainder = text[7:].strip()
+        else:
+            remainder = text
+
+        if not remainder:
             return (
-                f"=== ECONOMY REPORT "
-                f"({report['mode']}) ===\n"
-                f"Opportunities: "
-                f"{report['opportunities_total']}\n"
-                f"Total Revenue: "
-                f"${report['total_revenue']}\n"
-                f"Total Expenses: "
-                f"${report['total_expenses']}\n"
-                f"Total Profit: "
-                f"${report['total_profit']}\n"
-                f"Active Experiments: "
-                f"{report['active_experiments']}"
+                "Task requires an instruction."
             )
 
-        if (
-            "opportunities" in cmd
-            or "list" in cmd
+        assigned_to = self._detect_agent(
+            remainder
+        )
+
+        if assigned_to is None:
+            return (
+                "Specify an agent: "
+                "Banker, InfoFarmer or "
+                "OpportunityAgent."
+            )
+
+        cleaned = remainder
+
+        for name in (
+            "OpportunityAgent",
+            "InfoFarmer",
+            "Banker",
         ):
-            result = self.execute_tool(
-                "list_opportunities"
+            cleaned = cleaned.replace(
+                name,
+                "",
             )
 
-            if not result.get(
-                "success"
-            ):
-                return str(
-                    result
-                )
+        cleaned = cleaned.strip(
+            " :-"
+        )
 
-            opportunities = result[
-                "result"
-            ]
-
-            if not opportunities:
-                return (
-                    "No opportunities yet."
-                )
-
-            response = (
-                "Current Opportunities:\n\n"
+        if not cleaned:
+            return (
+                "Specify what the agent "
+                "should do."
             )
 
-            for opportunity in opportunities:
-                response += (
-                    f"[{opportunity['id']}] "
-                    f"{opportunity['name']} "
-                    f"— {opportunity['status']}\n"
-                )
+        task = self.memory.add_task(
+            title=cleaned[:100],
+            description=cleaned,
+            assigned_to=assigned_to,
+            created_by="Boss",
+        )
 
-            return response
-
-        return self.get_money_help()
+        return (
+            f"Task #{task['id']} created.\n"
+            f"Assigned to: {assigned_to}\n"
+            f"Instruction: {cleaned}"
+        )
 
     # ------------------------------------------------------------------
     # Status
     # ------------------------------------------------------------------
 
-    def full_status_report(
+    def _system_status(
         self,
     ) -> str:
 
@@ -519,145 +459,128 @@ class BossAgent(BaseAgent):
             status="pending"
         )
 
-        balance = (
-            self.memory.get_balance(
-                "Banker"
-            )
-        )
-
-        knowledge = len(
-            self.memory.data.get(
-                "knowledge",
-                [],
-            )
-        )
-
-        response = (
-            "=== BOSS STATUS REPORT ===\n\n"
-            f"Bank Balance: ${balance:.2f}\n"
-            f"Knowledge entries: {knowledge}\n"
-            f"Pending tasks: {len(pending)}\n\n"
-            "Agents:\n"
-        )
-
-        for name, info in agents.items():
-            response += (
-                f"  - {name}: "
-                f"{info.get('status', 'unknown')}\n"
-            )
-
-        return response
-
-    # ------------------------------------------------------------------
-    # InfoFarmer
-    # ------------------------------------------------------------------
-
-    def order_info_farmer(
-        self,
-        topic: str,
-    ) -> str:
-
-        task = self.memory.add_task(
-            title=f"Farm info: {topic}",
-            description=(
-                f"Gather useful information "
-                f"about {topic}"
-            ),
-            assigned_to="InfoFarmer",
-            created_by="Boss",
-        )
-
-        result = self.execute_tool(
-            "farm_info",
-            topic=topic,
-            agent="InfoFarmer",
-        )
-
-        self.memory.update_task(
-            task["id"],
-            "completed",
-            "Research executed.",
-        )
-
-        if result.get(
-            "success"
-        ):
-            return (
-                f"InfoFarmer research completed "
-                f"for '{topic}'."
-            )
-
-        return (
-            "InfoFarmer research failed: "
-            f"{result.get('error')}"
-        )
-
-    # ------------------------------------------------------------------
-    # Tasks
-    # ------------------------------------------------------------------
-
-    def _handle_assign(
-        self,
-        command: str,
-    ) -> str:
-
-        parts = command.split()
-
-        if len(parts) < 3:
-            return (
-                "Usage: assign "
-                "<agent> <task>"
-            )
-
-        agent_name = parts[1]
-        description = " ".join(
-            parts[2:]
-        )
-
-        task = self.memory.add_task(
-            title=description[:60],
-            description=description,
-            assigned_to=agent_name,
-            created_by="Boss",
+        balance = self.memory.get_balance(
+            "Banker"
         )
 
         return (
-            f"Task #{task['id']} assigned "
-            f"to {agent_name}."
+            "=== SYSTEM STATUS ===\n"
+            f"Agents: {len(agents)}\n"
+            f"Pending tasks: {len(pending)}\n"
+            f"Bank balance: ${balance:.2f}\n"
+            "\n"
+            + self._agent_status()
         )
+
+    def _agent_status(
+        self,
+    ) -> str:
+
+        agents = (
+            self.memory.get_all_agent_status()
+        )
+
+        if not agents:
+            return "No agents registered."
+
+        report = "=== AGENTS ===\n"
+
+        for name, status in agents.items():
+
+            report += (
+                f"{name}: "
+                f"{status.get('status', 'unknown')}"
+            )
+
+            objective = status.get(
+                "objective"
+            )
+
+            if objective:
+                report += (
+                    f" | Objective: {objective}"
+                )
+
+            report += "\n"
+
+        return report.rstrip()
 
     # ------------------------------------------------------------------
     # Help
     # ------------------------------------------------------------------
 
-    def get_command_help(
-        self,
+    @staticmethod
+    def _help() -> str:
+
+        return (
+            "=== BOSS COMMANDS ===\n"
+            "\n"
+            "status\n"
+            "agents\n"
+            "balance\n"
+            "research <topic>\n"
+            "farm <topic>\n"
+            "scan opportunities\n"
+            "list opportunities\n"
+            "economy report\n"
+            "simulation mode\n"
+            "real mode\n"
+            "task <agent> <instruction>\n"
+            "\n"
+            "Available agents:\n"
+            "  Banker\n"
+            "  InfoFarmer\n"
+            "  OpportunityAgent\n"
+            "\n"
+            "REAL mode does not bypass Creator "
+            "approval. Protected actions remain "
+            "blocked until explicitly approved."
+        )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_after_prefix(
+        text: str,
+        prefixes: List[str],
     ) -> str:
-        return """
-status
-report
-balance
-help
-search <query>
-read <url>
-make post about <topic>
-farm <topic>
-research <topic>
-assign <agent> <task>
-money mode
-money mode simulation
-money mode real
-money report
-money opportunities
-"""
-    
-    def get_money_help(
-        self,
-    ) -> str:
-        return """
-money mode
-money mode simulation
-money mode real
-money report
-money opportunities
-"""
+
+        lowered = text.lower()
+
+        for prefix in sorted(
+            prefixes,
+            key=len,
+            reverse=True,
+        ):
+            prefix_lower = prefix.lower()
+
+            if lowered.startswith(
+                prefix_lower
+            ):
+                return text[
+                    len(prefix):
+                ].strip(
+                    " :-"
+                )
+
+        return ""
+
+    @staticmethod
+    def _detect_agent(
+        text: str,
+    ) -> Any:
+
+        lowered = text.lower()
+
+        if "opportunityagent" in lowered:
+            return "OpportunityAgent"
+
+        if "infofarmer" in lowered:
+            return "InfoFarmer"
+
+        if "banker" in lowered:
+            return "Banker"
+
+        return None
