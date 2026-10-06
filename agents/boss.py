@@ -1,50 +1,63 @@
 """
 Boss Agent
 ----------
-Primary coordinator and command-routing agent.
+Creator-facing coordinator for the agent simulation.
 
-Boss can:
-- Inspect system status.
-- Inspect other agents.
-- Request research.
-- Scan opportunities.
-- Analyse opportunities.
-- Delegate tasks.
-- Run cognitive cycles.
-
-Boss cannot:
-- Change simulation/live mode.
-- Bypass Creator approval.
-- Perform protected consequential actions directly.
+Boss receives Creator commands, understands the request, and delegates
+work to the appropriate specialist agent when required.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from .base_agent import BaseAgent
 
 
 class Boss(BaseAgent):
     def __init__(self, memory, tools):
+
         super().__init__(
             name="Boss",
             role="Coordinator",
             memory=memory,
             tools=tools,
             description=(
-                "Coordinates the agent system, interprets Creator "
-                "commands, delegates work, monitors progress, and "
-                "coordinates research and opportunity discovery."
+                "Coordinates the agent system, interprets Creator commands, "
+                "delegates work to specialist agents, monitors the system, "
+                "and coordinates revenue and research activities."
             ),
         )
 
-    # ------------------------------------------------------------------
-    # Command processing
-    # ------------------------------------------------------------------
+        self.agents: Dict[str, Any] = {}
 
-    def process_command(self, command: str) -> Dict[str, Any]:
+    # ============================================================
+    # CREATOR COMMAND ENTRY POINT
+    # ============================================================
+
+    def process_order(
+        self,
+        order: str,
+    ) -> Dict[str, Any]:
+        """
+        Primary command interface.
+
+        This is the method used by main.py.
+        """
+
+        return self.process_command(order)
+
+    # ============================================================
+    # COMMAND PROCESSOR
+    # ============================================================
+
+    def process_command(
+        self,
+        command: str,
+    ) -> Dict[str, Any]:
+
         command = (command or "").strip()
 
         if not command:
+
             return {
                 "status": "error",
                 "agent": self.name,
@@ -53,76 +66,211 @@ class Boss(BaseAgent):
 
         lowered = command.lower()
 
-        if lowered in {"help", "?", "commands"}:
+        # --------------------------------------------------------
+        # HELP
+        # --------------------------------------------------------
+
+        if lowered in {
+            "help",
+            "?",
+            "commands",
+        }:
+
             return self.get_help()
+
+        # --------------------------------------------------------
+        # STATUS
+        # --------------------------------------------------------
 
         if lowered in {
             "status",
             "system status",
             "system",
         }:
+
             return self._system_status()
 
+        # --------------------------------------------------------
+        # AGENT STATUS
+        # --------------------------------------------------------
+
         if lowered in {
-            "agent status",
             "agents",
-            "agent list",
+            "agent status",
+            "agents status",
+            "list agents",
         }:
+
             return self._agent_status()
+
+        # --------------------------------------------------------
+        # BALANCE
+        # --------------------------------------------------------
 
         if lowered in {
             "balance",
             "money",
-            "funds",
+            "bank balance",
+            "vault",
         }:
-            return self.execute_tool(
-                "check_balance",
-            )
 
-        if lowered.startswith("research "):
-            query = command[9:].strip()
+            try:
 
-            if not query:
-                return {
-                    "status": "error",
-                    "agent": self.name,
-                    "message": "Research query is required.",
-                }
+                balance = self.memory.get_balance(
+                    "Banker"
+                )
 
-            return self.execute_tool(
-                "web_search",
-                query=query,
-            )
+            except Exception:
+
+                balance = 0.0
+
+            return {
+                "status": "success",
+                "agent": self.name,
+                "operation": "balance",
+                "balance": balance,
+                "message": (
+                    f"Current simulated balance: "
+                    f"{balance}"
+                ),
+            }
+
+        # --------------------------------------------------------
+        # RESEARCH / SEARCH
+        # --------------------------------------------------------
 
         if lowered.startswith("search "):
+
             query = command[7:].strip()
 
             if not query:
+
                 return {
                     "status": "error",
                     "agent": self.name,
-                    "message": "Search query is required.",
+                    "message": (
+                        "Search query is required."
+                    ),
                 }
 
-            return self.execute_tool(
-                "web_search",
-                query=query,
+            return self._delegate_to_agent(
+                "InfoFarmer",
+                f"search {query}",
             )
 
+        if lowered.startswith("research "):
+
+            topic = command[9:].strip()
+
+            if not topic:
+
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": (
+                        "Research topic is required."
+                    ),
+                }
+
+            return self._delegate_to_agent(
+                "InfoFarmer",
+                f"research {topic}",
+            )
+
+        if lowered.startswith(
+            "find information about "
+        ):
+
+            topic = command[
+                len("find information about "):
+            ].strip()
+
+            return self._delegate_to_agent(
+                "InfoFarmer",
+                f"farm {topic}",
+            )
+
+        if lowered.startswith(
+            "find info about "
+        ):
+
+            topic = command[
+                len("find info about "):
+            ].strip()
+
+            return self._delegate_to_agent(
+                "InfoFarmer",
+                f"farm {topic}",
+            )
+
+        # --------------------------------------------------------
+        # READ WEB PAGE
+        # --------------------------------------------------------
+
+        if lowered.startswith("read "):
+
+            url = command[5:].strip()
+
+            if not url:
+
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": (
+                        "URL is required."
+                    ),
+                }
+
+            return self._delegate_to_agent(
+                "InfoFarmer",
+                f"read {url}",
+            )
+
+        if lowered.startswith("open "):
+
+            url = command[5:].strip()
+
+            if not url:
+
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": (
+                        "URL is required."
+                    ),
+                }
+
+            return self._delegate_to_agent(
+                "InfoFarmer",
+                f"open {url}",
+            )
+
+        # --------------------------------------------------------
+        # INFORMATION FARMING
+        # --------------------------------------------------------
+
         if lowered.startswith("farm "):
+
             topic = command[5:].strip()
 
             if not topic:
+
                 return {
                     "status": "error",
                     "agent": self.name,
-                    "message": "Information topic is required.",
+                    "message": (
+                        "Information topic is required."
+                    ),
                 }
 
-            return self.execute_tool(
-                "farm_info",
-                topic=topic,
+            return self._delegate_to_agent(
+                "InfoFarmer",
+                f"farm {topic}",
             )
+
+        # --------------------------------------------------------
+        # OPPORTUNITY SCANNING
+        # --------------------------------------------------------
 
         if lowered in {
             "scan",
@@ -130,12 +278,16 @@ class Boss(BaseAgent):
             "find opportunities",
             "scan opportunities",
         }:
+
             return self._delegate_to_agent(
                 "OpportunityAgent",
                 "scan",
             )
 
-        if lowered.startswith("scan "):
+        if lowered.startswith(
+            "scan "
+        ):
+
             category = command[5:].strip()
 
             return self._delegate_to_agent(
@@ -143,195 +295,386 @@ class Boss(BaseAgent):
                 f"scan {category}",
             )
 
-        if lowered.startswith("analyse "):
-            opportunity_id = command[8:].strip()
+        if lowered.startswith(
+            "find opportunities "
+        ):
 
-            if not opportunity_id:
-                return {
-                    "status": "error",
-                    "agent": self.name,
-                    "message": "Opportunity ID is required.",
-                }
+            category = command[
+                len("find opportunities "):
+            ].strip()
+
+            return self._delegate_to_agent(
+                "OpportunityAgent",
+                f"scan {category}",
+            )
+
+        # --------------------------------------------------------
+        # OPPORTUNITY LIST
+        # --------------------------------------------------------
+
+        if lowered in {
+            "list opportunities",
+            "opportunity list",
+            "show opportunities",
+        }:
+
+            return self._delegate_to_agent(
+                "OpportunityAgent",
+                "opportunities",
+            )
+
+        # --------------------------------------------------------
+        # OPPORTUNITY ANALYSIS
+        # --------------------------------------------------------
+
+        if lowered.startswith(
+            "analyse "
+        ):
+
+            opportunity_id = command[
+                len("analyse "):
+            ].strip()
 
             return self._delegate_to_agent(
                 "OpportunityAgent",
                 f"analyse {opportunity_id}",
             )
 
-        if lowered.startswith("analyze "):
-            opportunity_id = command[8:].strip()
+        if lowered.startswith(
+            "analyze "
+        ):
 
-            if not opportunity_id:
-                return {
-                    "status": "error",
-                    "agent": self.name,
-                    "message": "Opportunity ID is required.",
-                }
+            opportunity_id = command[
+                len("analyze "):
+            ].strip()
 
             return self._delegate_to_agent(
                 "OpportunityAgent",
                 f"analyse {opportunity_id}",
             )
+
+        # --------------------------------------------------------
+        # EXPERIMENTS
+        # --------------------------------------------------------
+
+        if lowered.startswith(
+            "test "
+        ):
+
+            opportunity_id = command[
+                len("test "):
+            ].strip()
+
+            return self._delegate_to_agent(
+                "OpportunityAgent",
+                f"test {opportunity_id}",
+            )
+
+        if lowered.startswith(
+            "experiment "
+        ):
+
+            opportunity_id = command[
+                len("experiment "):
+            ].strip()
+
+            return self._delegate_to_agent(
+                "OpportunityAgent",
+                f"test {opportunity_id}",
+            )
+
+        # --------------------------------------------------------
+        # ECONOMY
+        # --------------------------------------------------------
 
         if lowered in {
             "economy",
             "economy report",
             "financial report",
         }:
-            return self.execute_tool(
-                "economy_report",
+
+            return self._delegate_to_agent(
+                "OpportunityAgent",
+                "report",
             )
+
+        # --------------------------------------------------------
+        # MONEY-MAKING IDEAS
+        # --------------------------------------------------------
 
         if lowered in {
-            "mode",
-            "money mode",
-            "operating mode",
+            "ideas",
+            "money ideas",
+            "revenue ideas",
+            "make money",
+            "make money ideas",
         }:
-            return self.execute_tool(
-                "money_mode",
-            )
 
-        if lowered.startswith("mode "):
-            return {
-                "status": "blocked",
-                "agent": self.name,
-                "message": (
-                    "Boss cannot change operating mode. "
-                    "Simulation/live mode is controlled by the "
-                    "Creator."
-                ),
-            }
-
-        if lowered.startswith("assign "):
-            return self._create_task_from_command(
-                command[7:].strip()
-            )
-
-        if lowered.startswith("task "):
-            return self._create_task_from_command(
-                command[5:].strip()
-            )
-
-        if lowered.startswith("delegate "):
-            return self._delegate_command(
-                command[9:].strip()
-            )
-
-        detected_agent = self._detect_agent(command)
-
-        if detected_agent:
             return self._delegate_to_agent(
-                detected_agent,
+                "OpportunityAgent",
+                "ideas",
+            )
+
+        if lowered.startswith(
+            "ideas "
+        ):
+
+            category = command[6:].strip()
+
+            return self._delegate_to_agent(
+                "OpportunityAgent",
+                f"ideas {category}",
+            )
+
+        # --------------------------------------------------------
+        # SOCIAL MEDIA PLANNING
+        # --------------------------------------------------------
+
+        social_platforms = [
+            "instagram",
+            "facebook",
+            "linkedin",
+            "youtube",
+            "tiktok",
+            "reddit",
+            "threads",
+            "twitter",
+            "x",
+        ]
+
+        for platform in social_platforms:
+
+            if lowered.startswith(
+                platform + " "
+            ):
+
+                topic = command[
+                    len(platform) + 1:
+                ].strip()
+
+                return self._delegate_to_agent(
+                    "OpportunityAgent",
+                    f"social {platform} {topic}",
+                )
+
+        # --------------------------------------------------------
+        # BANKER
+        # --------------------------------------------------------
+
+        if lowered in {
+            "banker",
+            "banker status",
+            "financial status",
+            "transactions",
+            "allowance",
+        }:
+
+            return self._delegate_to_agent(
+                "Banker",
                 command,
             )
+
+        if lowered.startswith(
+            "banker "
+        ):
+
+            banker_command = command[
+                len("banker "):
+            ].strip()
+
+            return self._delegate_to_agent(
+                "Banker",
+                banker_command,
+            )
+
+        # --------------------------------------------------------
+        # DIRECT AGENT COMMAND
+        # --------------------------------------------------------
+
+        detected_agent = self._detect_agent(
+            command
+        )
+
+        if detected_agent:
+
+            remaining = self._remove_agent_name(
+                command,
+                detected_agent,
+            )
+
+            if remaining:
+
+                return self._delegate_to_agent(
+                    detected_agent,
+                    remaining,
+                )
+
+        # --------------------------------------------------------
+        # TASK / DELEGATION
+        # --------------------------------------------------------
+
+        if lowered.startswith(
+            "delegate "
+        ):
+
+            return self._delegate_command(
+                command[
+                    len("delegate "):
+                ].strip()
+            )
+
+        if lowered.startswith(
+            "assign "
+        ):
+
+            return self._create_task_from_command(
+                command[
+                    len("assign "):
+                ].strip()
+            )
+
+        if lowered.startswith(
+            "task "
+        ):
+
+            return self._create_task_from_command(
+                command[
+                    len("task "):
+                ].strip()
+            )
+
+        # --------------------------------------------------------
+        # RUN
+        # --------------------------------------------------------
 
         if lowered in {
             "run",
             "cycle",
             "run cycle",
+            "autonomous cycle",
         }:
+
             return self.run_cycle()
+
+        # --------------------------------------------------------
+        # FALLBACK
+        # --------------------------------------------------------
 
         return {
             "status": "error",
             "agent": self.name,
-            "message": f"Unknown Boss command: {command}",
+            "message": (
+                f"I don't recognise that command yet: "
+                f"{command}"
+            ),
+            "suggestion": (
+                "Try 'help', 'status', 'agents', "
+                "'search <topic>', 'scan', "
+                "'ideas', or 'economy'."
+            ),
             "help": self.get_help(),
         }
 
-    # ------------------------------------------------------------------
-    # Task creation
-    # ------------------------------------------------------------------
+    # ============================================================
+    # AGENT REGISTRATION
+    # ============================================================
 
-    def _create_task_from_command(
+    def register_agent(
         self,
-        command: str,
-    ) -> Dict[str, Any]:
-        if not command:
-            return {
-                "status": "error",
-                "agent": self.name,
-                "message": "Task description is required.",
-            }
+        agent: Any,
+    ) -> None:
 
-        target = self._detect_agent(command)
+        if agent is None:
+            return
 
-        if target:
-            return self._delegate_to_agent(
-                target,
-                command,
-            )
-
-        return self.create_task(
-            title=command,
-            description=command,
+        name = getattr(
+            agent,
+            "name",
+            None,
         )
 
-    # ------------------------------------------------------------------
-    # Delegation
-    # ------------------------------------------------------------------
+        if not name:
+            return
 
-    def _delegate_command(
+        self.agents[name] = agent
+
+    def register_agents(
         self,
-        command: str,
-    ) -> Dict[str, Any]:
-        if not command:
-            return {
-                "status": "error",
-                "agent": self.name,
-                "message": "Delegation command is required.",
-            }
+        agents: Dict[str, Any],
+    ) -> None:
 
-        target = self._detect_agent(command)
+        if not agents:
+            return
 
-        if not target:
-            return {
-                "status": "error",
-                "agent": self.name,
-                "message": (
-                    "Could not determine which agent should "
-                    "receive the task."
-                ),
-                "available_agents": [
-                    "Banker",
-                    "InfoFarmer",
-                    "OpportunityAgent",
-                ],
-            }
+        for name, agent in agents.items():
 
-        return self._delegate_to_agent(
-            target,
-            command,
-        )
+            if name == self.name:
+                continue
+
+            self.register_agent(agent)
+
+    # ============================================================
+    # DELEGATION
+    # ============================================================
 
     def _delegate_to_agent(
         self,
         agent_name: str,
         command: str,
     ) -> Dict[str, Any]:
-        agent = self._find_agent(agent_name)
+
+        agent = self._find_agent(
+            agent_name
+        )
 
         if agent is None:
+
             return {
                 "status": "error",
                 "agent": self.name,
-                "message": f"Agent {agent_name} is not available.",
+                "message": (
+                    f"Agent '{agent_name}' "
+                    "is not registered with Boss."
+                ),
+                "available_agents": list(
+                    self.agents.keys()
+                ),
             }
 
         try:
-            if hasattr(agent, "process_command"):
-                result = agent.process_command(command)
 
-            elif hasattr(agent, "process_order"):
-                result = agent.process_order(command)
+            if hasattr(
+                agent,
+                "process_order",
+            ):
+
+                result = agent.process_order(
+                    command
+                )
+
+            elif hasattr(
+                agent,
+                "process_command",
+            ):
+
+                result = agent.process_command(
+                    command
+                )
 
             else:
-                result = {
+
+                return {
                     "status": "error",
+                    "agent": self.name,
                     "message": (
-                        f"{agent_name} cannot process commands."
+                        f"Agent '{agent_name}' "
+                        "has no command interface."
                     ),
                 }
+
+            result = self._normalise_result(
+                result
+            )
 
             return {
                 "status": "success",
@@ -342,165 +685,428 @@ class Boss(BaseAgent):
             }
 
         except Exception as exc:
+
             return {
                 "status": "error",
                 "agent": self.name,
                 "delegated_to": agent_name,
-                "message": str(exc),
+                "command": command,
+                "message": (
+                    f"{agent_name} failed: {exc}"
+                ),
             }
 
-    # ------------------------------------------------------------------
-    # Status
-    # ------------------------------------------------------------------
+    def _find_agent(
+        self,
+        name: str,
+    ) -> Optional[Any]:
 
-    def _system_status(self) -> Dict[str, Any]:
-        return {
-            "status": "success",
-            "agent": self.name,
-            "system": {
-                "agent": self.name,
-                "role": self.role,
-                "objective": self.get_objective(),
-                "status": self.status,
-                "mode": self._get_mode(),
-            },
-        }
+        if not name:
+            return None
 
-    def _agent_status(self) -> Dict[str, Any]:
-        reports = {}
+        if name in self.agents:
+            return self.agents[name]
 
-        for agent_name in [
-            "Boss",
-            "Banker",
-            "InfoFarmer",
-            "OpportunityAgent",
-        ]:
-            agent = self._find_agent(agent_name)
+        lowered = name.lower()
 
-            if agent is None:
-                continue
+        for agent_name, agent in self.agents.items():
 
-            try:
-                reports[agent_name] = agent.get_status_report()
-            except Exception as exc:
-                reports[agent_name] = {
-                    "status": "error",
-                    "message": str(exc),
-                }
+            if agent_name.lower() == lowered:
+                return agent
 
-        return {
-            "status": "success",
-            "agent": self.name,
-            "agents": reports,
-        }
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _find_agent(self, name: str):
-        if name == self.name:
-            return self
-
-        registry = getattr(self.tools, "agents", None)
-
-        if isinstance(registry, dict):
-            if name in registry:
-                return registry[name]
-
-        # The orchestrator normally performs cross-agent routing.
-        # This fallback keeps Boss functional when used independently.
         return None
 
     def _detect_agent(
         self,
         command: str,
-    ) -> str:
+    ) -> Optional[str]:
+
         lowered = command.lower()
 
-        if "opportunityagent" in lowered:
-            return "OpportunityAgent"
+        names = sorted(
+            self.agents.keys(),
+            key=len,
+            reverse=True,
+        )
 
-        if "opportunity agent" in lowered:
-            return "OpportunityAgent"
+        for name in names:
 
-        if "opportunities" in lowered:
-            return "OpportunityAgent"
+            if lowered.startswith(
+                name.lower() + " "
+            ):
 
-        if "revenue" in lowered:
-            return "OpportunityAgent"
+                return name
 
-        if "infofarmer" in lowered:
-            return "InfoFarmer"
+            if lowered == name.lower():
 
-        if "info farmer" in lowered:
-            return "InfoFarmer"
+                return name
 
-        if "researcher" in lowered:
-            return "InfoFarmer"
+        return None
 
-        if "research" in lowered:
-            return "InfoFarmer"
+    def _remove_agent_name(
+        self,
+        command: str,
+        agent_name: str,
+    ) -> str:
 
-        if "banker" in lowered:
-            return "Banker"
+        lowered = command.lower()
+        prefix = agent_name.lower()
 
-        if "finance" in lowered:
-            return "Banker"
+        if lowered.startswith(
+            prefix + " "
+        ):
 
-        if "money" in lowered:
-            return "Banker"
+            return command[
+                len(agent_name):
+            ].strip()
 
-        return ""
+        if lowered == prefix:
 
-    def _get_mode(self) -> str:
+            return ""
+
+        return command
+
+    # ============================================================
+    # DELEGATION COMMAND
+    # ============================================================
+
+    def _delegate_command(
+        self,
+        command: str,
+    ) -> Dict[str, Any]:
+
+        parts = command.split(
+            " ",
+            1,
+        )
+
+        if len(parts) < 2:
+
+            return {
+                "status": "error",
+                "agent": self.name,
+                "message": (
+                    "Use: delegate "
+                    "<AgentName> <command>"
+                ),
+            }
+
+        agent_name = parts[0]
+        agent_command = parts[1].strip()
+
+        return self._delegate_to_agent(
+            agent_name,
+            agent_command,
+        )
+
+    # ============================================================
+    # TASK CREATION
+    # ============================================================
+
+    def _create_task_from_command(
+        self,
+        command: str,
+    ) -> Dict[str, Any]:
+
+        if not command:
+
+            return {
+                "status": "error",
+                "agent": self.name,
+                "message": (
+                    "Task description is required."
+                ),
+            }
+
         try:
-            if hasattr(self.tools, "get_mode"):
+
+            task = self.create_task(
+                title=command,
+                description=command,
+                priority="normal",
+            )
+
+            return {
+                "status": "success",
+                "agent": self.name,
+                "operation": "create_task",
+                "task": task,
+                "message": (
+                    f"Task created: {command}"
+                ),
+            }
+
+        except Exception as exc:
+
+            return {
+                "status": "error",
+                "agent": self.name,
+                "message": (
+                    f"Could not create task: {exc}"
+                ),
+            }
+
+    # ============================================================
+    # SYSTEM STATUS
+    # ============================================================
+
+    def _system_status(
+        self,
+    ) -> Dict[str, Any]:
+
+        try:
+
+            world = self.memory.get_world_state()
+
+        except Exception:
+
+            world = {}
+
+        try:
+
+            balance = self.memory.get_balance(
+                "Banker"
+            )
+
+        except Exception:
+
+            balance = 0.0
+
+        return {
+            "status": "success",
+            "agent": self.name,
+            "operation": "system_status",
+            "message": "System operational.",
+            "mode": self._get_mode(),
+            "agents_registered": list(
+                self.agents.keys()
+            ),
+            "balance": balance,
+            "world": world,
+        }
+
+    # ============================================================
+    # AGENT STATUS
+    # ============================================================
+
+    def _agent_status(
+        self,
+    ) -> Dict[str, Any]:
+
+        result = {}
+
+        for name, agent in self.agents.items():
+
+            try:
+
+                if hasattr(
+                    agent,
+                    "get_status_report",
+                ):
+
+                    result[name] = (
+                        agent.get_status_report()
+                    )
+
+                else:
+
+                    result[name] = {
+                        "name": name,
+                        "status": "registered",
+                    }
+
+            except Exception as exc:
+
+                result[name] = {
+                    "name": name,
+                    "status": "error",
+                    "error": str(exc),
+                }
+
+        return {
+            "status": "success",
+            "agent": self.name,
+            "operation": "agent_status",
+            "agents": result,
+            "count": len(result),
+        }
+
+    # ============================================================
+    # MODE
+    # ============================================================
+
+    def _get_mode(
+        self,
+    ) -> str:
+
+        try:
+
+            if hasattr(
+                self.tools,
+                "get_mode",
+            ):
+
                 return self.tools.get_mode()
+
+        except Exception:
+            pass
+
+        try:
+
+            if hasattr(
+                self.memory,
+                "get_world_state",
+            ):
+
+                state = (
+                    self.memory.get_world_state()
+                )
+
+                return state.get(
+                    "economy_mode",
+                    "simulation",
+                )
+
         except Exception:
             pass
 
         return "simulation"
 
-    # ------------------------------------------------------------------
-    # Help
-    # ------------------------------------------------------------------
+    # ============================================================
+    # RESULT NORMALISATION
+    # ============================================================
 
-    def get_help(self) -> Dict[str, Any]:
+    def _normalise_result(
+        self,
+        result: Any,
+    ) -> Any:
+
+        if result is None:
+            return None
+
+        if isinstance(
+            result,
+            (
+                str,
+                int,
+                float,
+                bool,
+            ),
+        ):
+            return result
+
+        if isinstance(
+            result,
+            dict,
+        ):
+
+            return {
+                str(key): self._normalise_result(
+                    value
+                )
+                for key, value in result.items()
+            }
+
+        if isinstance(
+            result,
+            (
+                list,
+                tuple,
+            ),
+        ):
+
+            return [
+                self._normalise_result(
+                    item
+                )
+                for item in result
+            ]
+
+        if hasattr(
+            result,
+            "model_dump",
+        ):
+
+            try:
+
+                return self._normalise_result(
+                    result.model_dump()
+                )
+
+            except Exception:
+                pass
+
+        if hasattr(
+            result,
+            "__dict__",
+        ):
+
+            try:
+
+                return self._normalise_result(
+                    vars(result)
+                )
+
+            except Exception:
+                pass
+
+        return str(result)
+
+    # ============================================================
+    # HELP
+    # ============================================================
+
+    def get_help(
+        self,
+    ) -> Dict[str, Any]:
+
         return {
             "status": "success",
             "agent": self.name,
             "role": self.role,
+            "message": (
+                "Boss is the Creator-facing "
+                "coordinator."
+            ),
             "commands": [
+                "help",
                 "status",
-                "agent status",
+                "agents",
                 "balance",
-                "research <query>",
                 "search <query>",
+                "research <topic>",
+                "read <url>",
+                "open <url>",
                 "farm <topic>",
                 "scan",
                 "scan <category>",
                 "opportunities",
+                "list opportunities",
                 "analyse <opportunity_id>",
                 "analyze <opportunity_id>",
+                "test <opportunity_id>",
+                "experiment <opportunity_id>",
                 "economy",
-                "mode",
+                "ideas",
+                "ideas <category>",
+                "instagram <topic>",
+                "facebook <topic>",
+                "linkedin <topic>",
+                "youtube <topic>",
+                "tiktok <topic>",
+                "reddit <topic>",
+                "delegate <agent> <command>",
                 "assign <task>",
-                "delegate <agent> <task>",
+                "task <task>",
                 "run",
-                "help",
             ],
-            "capabilities": [
-                "System coordination",
-                "Agent delegation",
-                "Research requests",
-                "Opportunity discovery",
-                "Opportunity analysis",
-                "Task creation",
-                "System monitoring",
-            ],
-            "safety": (
-                "Boss cannot change operating mode or bypass "
-                "Creator approval for consequential actions."
+            "agents": list(
+                self.agents.keys()
             ),
-        }
+            "safety": (
+                "Boss coordinates the system but "
+                "does not bypass the Creator "
+                "approval gate for consequential "
+                "actions."
+            ),
+            }
