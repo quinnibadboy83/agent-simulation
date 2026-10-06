@@ -1,51 +1,46 @@
 """
-Agent Simulation - Main Application
------------------------------------
+Agent Simulation
+----------------
 
-FastAPI entry point for the autonomous agent simulation.
+Main application entry point.
 
 Provides:
 
-- web dashboard
-- Creator command interface
-- agent status
-- economy status
-- world state
-- Creator approval management
-- task visibility
-- InfoFarmer knowledge management
+- FastAPI web application
+- Creator dashboard
+- Boss command interface
+- Agent status
+- Cognitive state
+- Economy reporting
+- Creator approval queue
+- Creator-controlled operating mode
+- World/time controls
+- Health endpoint
 
-Safety model:
+Architecture:
 
-SIMULATION
-    Safe simulation actions can execute normally.
-
-REAL
-    Public research can operate autonomously.
-
-    Consequential protected actions require a specific
-    Creator approval tied to the exact agent, tool and
-    parameters.
-
-REAL mode does NOT mean unrestricted execution.
+Creator
+    ↓
+Dashboard / API
+    ↓
+Boss / Agents
+    ↓
+CognitiveRoom + SharedMemory
+    ↓
+ToolRegistry
+    ↓
+Simulation or protected live-capable tools
 """
 
 from pathlib import Path
 import os
-
-from fastapi import (
-    FastAPI,
-    Form,
-    Request,
-)
-from fastapi.responses import (
-    HTMLResponse,
-    JSONResponse,
-)
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+from typing import Any, Dict
 
 import uvicorn
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from core.memory import SharedMemory
 from core.world import World
@@ -56,44 +51,33 @@ from core.tools import create_default_tools
 from agents.boss import BossAgent
 from agents.banker import BankerAgent
 from agents.info_farmer import InfoFarmerAgent
-from agents.opportunity_agent import (
-    OpportunityAgent,
-)
+from agents.opportunity_agent import OpportunityAgent
 
 
-# ======================================================================
+# ================================================================
 # APPLICATION
-# ======================================================================
+# ================================================================
 
 app = FastAPI(
     title="Agent Simulation",
-    version="1.0.0",
+    description=(
+        "Autonomous multi-agent system with "
+        "Creator-controlled consequential actions."
+    ),
+    version="2.0.0",
 )
 
 
-BASE_DIR = Path(__file__).parent
+BASE_DIR = Path(__file__).resolve().parent
 
-STATIC_DIR = (
-    BASE_DIR
-    / "ui"
-    / "static"
-)
-
-TEMPLATE_DIR = (
-    BASE_DIR
-    / "ui"
-    / "templates"
-)
+STATIC_DIR = BASE_DIR / "ui" / "static"
+TEMPLATE_DIR = BASE_DIR / "ui" / "templates"
 
 
-# Only mount static files if the directory exists.
-# This prevents deployment failure caused by a missing UI directory.
 if STATIC_DIR.exists():
     app.mount(
         "/static",
-        StaticFiles(
-            directory=STATIC_DIR
-        ),
+        StaticFiles(directory=STATIC_DIR),
         name="static",
     )
 
@@ -103,55 +87,48 @@ templates = Jinja2Templates(
 )
 
 
-# ======================================================================
-# CORE SYSTEMS
-# ======================================================================
+# ================================================================
+# CORE SERVICES
+# ================================================================
 
 memory = SharedMemory()
 
-world = World(
-    memory
-)
+world = World(memory)
 
-economy = Economy(
-    memory
-)
+economy = Economy(memory)
 
-research = WebResearch(
-    memory
-)
+research = WebResearch(memory)
 
 tools = create_default_tools(
     memory=memory,
-    world=world,
     economy=economy,
     research=research,
 )
 
 
-# ======================================================================
+# ================================================================
 # AGENTS
-# ======================================================================
+# ================================================================
 
 boss = BossAgent(
-    memory,
-    tools,
+    memory=memory,
+    tools=tools,
 )
 
 banker = BankerAgent(
-    memory,
-    tools,
+    memory=memory,
+    tools=tools,
 )
 
 info_farmer = InfoFarmerAgent(
-    memory,
-    tools,
+    memory=memory,
+    tools=tools,
 )
 
 opportunity_agent = OpportunityAgent(
-    memory,
-    tools,
-    economy,
+    memory=memory,
+    tools=tools,
+    economy=economy,
 )
 
 
@@ -163,19 +140,15 @@ agents = {
 }
 
 
-# ======================================================================
-# AGENT DISPLAY SHEETS
-# ======================================================================
+# ================================================================
+# AGENT DISPLAY DATA
+# ================================================================
 
 SHEETS = {
     "Boss": {
         "role": "Overseer",
-        "voice": (
-            "Short orders. Checks the others."
-        ),
-        "trait": (
-            "Won't spend without approval"
-        ),
+        "voice": "Coordinates the other agents.",
+        "trait": "Does not bypass Creator approval.",
         "stats": {
             "Perception": 7,
             "Intelligence": 8,
@@ -185,13 +158,9 @@ SHEETS = {
         },
     },
     "Banker": {
-        "role": "Ledger",
-        "voice": (
-            "Counts twice. Refuses vague spend."
-        ),
-        "trait": (
-            "Guards the balance"
-        ),
+        "role": "Financial Controller",
+        "voice": "Tracks the ledger and financial state.",
+        "trait": "Guards financial activity.",
         "stats": {
             "Perception": 6,
             "Intelligence": 8,
@@ -201,14 +170,9 @@ SHEETS = {
         },
     },
     "InfoFarmer": {
-        "role": "Research",
-        "voice": (
-            "Keeps clippings. "
-            "Hates losing a source."
-        ),
-        "trait": (
-            "Hoards notes"
-        ),
+        "role": "Research Specialist",
+        "voice": "Collects and preserves useful information.",
+        "trait": "Builds the knowledge base.",
         "stats": {
             "Perception": 9,
             "Intelligence": 8,
@@ -218,14 +182,9 @@ SHEETS = {
         },
     },
     "OpportunityAgent": {
-        "role": "Scout",
-        "voice": (
-            "Looks for a small test, "
-            "not a fantasy."
-        ),
-        "trait": (
-            "Scores before suggesting"
-        ),
+        "role": "Opportunity Analyst",
+        "voice": "Looks for realistic opportunities and tests.",
+        "trait": "Analyses before recommending action.",
         "stats": {
             "Perception": 8,
             "Intelligence": 7,
@@ -237,72 +196,148 @@ SHEETS = {
 }
 
 
-# ======================================================================
-# DASHBOARD
-# ======================================================================
+# ================================================================
+# HELPERS
+# ================================================================
+
+def get_safety_state() -> Dict[str, Any]:
+    """
+    Return the current Creator safety state.
+    """
+
+    policy = economy.get_mode_policy()
+
+    return {
+        "mode": policy["mode"],
+        "label": policy["label"],
+        "simulation": policy["simulation"],
+        "live": policy["live"],
+        "live_tools_available": policy[
+            "live_tools_available"
+        ],
+        "protected_actions_allowed": policy[
+            "protected_actions_allowed"
+        ],
+        "creator_approval_required": policy[
+            "creator_approval_required"
+        ],
+        "description": policy["description"],
+    }
+
+
+def format_approval(approval: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert the internal ApprovalGate representation into a
+    dashboard-friendly representation.
+
+    Internal names remain authoritative:
+
+        tool
+        reason
+        payload
+
+    The UI receives compatible aliases:
+
+        action
+        description
+        parameters
+    """
+
+    payload = approval.get("payload") or {}
+
+    return {
+        **approval,
+        "action": approval.get(
+            "tool",
+            "Unknown",
+        ),
+        "description": approval.get(
+            "reason",
+            "",
+        ),
+        "parameters": payload,
+        "tool": approval.get(
+            "tool",
+            "Unknown",
+        ),
+        "payload": payload,
+    }
+
+
+def get_pending_approvals():
+    """
+    Return pending Creator approvals in dashboard format.
+    """
+
+    return [
+        format_approval(item)
+        for item in tools.approval_gate.list_pending()
+    ]
+
+
+def get_all_approvals():
+    """
+    Return all Creator approvals in dashboard format.
+    """
+
+    return [
+        format_approval(item)
+        for item in tools.approval_gate.list_all()
+    ]
+
+
+# ================================================================
+# HOME
+# ================================================================
 
 @app.get(
     "/",
     response_class=HTMLResponse,
 )
-async def home(
-    request: Request,
-):
-
-    context = {
-        "request": request,
-        "world": world.get_summary(),
-        "agents": (
-            memory.get_all_agent_status()
-        ),
-        "logs": memory.get_logs(30),
-        "balance": memory.get_balance(
-            "Banker"
-        ),
-        "knowledge_count": len(
-            memory.data.get(
-                "knowledge",
-                [],
-            )
-        ),
-        "pending_tasks": (
-            memory.get_tasks(
-                status="pending"
-            )
-        ),
-        "economy": (
-            economy.get_economy_report()
-        ),
-        "approvals": (
-            memory.get_approvals(
-                status="pending"
-            )
-        ),
-    }
+async def home(request: Request):
 
     return templates.TemplateResponse(
         "index.html",
-        context,
+        {
+            "request": request,
+            "world": world.get_summary(),
+            "agents": memory.get_all_agent_status(),
+            "logs": memory.get_logs(30),
+            "balance": memory.get_balance("Banker"),
+            "knowledge_count": len(
+                memory.data.get(
+                    "knowledge",
+                    [],
+                )
+            ),
+            "pending_tasks": memory.get_tasks(
+                status="pending",
+            ),
+            "economy": economy.get_economy_report(),
+            "safety": get_safety_state(),
+            "approvals": get_pending_approvals(),
+        },
     )
 
 
-# ======================================================================
-# CREATOR COMMAND
-# ======================================================================
+# ================================================================
+# BOSS COMMAND
+# ================================================================
 
 @app.post("/command")
 async def send_command(
     command: str = Form(...),
 ):
 
-    if not command.strip():
+    command = command.strip()
+
+    if not command:
         return JSONResponse(
             {
                 "success": False,
-                "response": (
-                    "Empty command."
-                ),
-            }
+                "response": "Empty command.",
+            },
+            status_code=400,
         )
 
     try:
@@ -310,40 +345,28 @@ async def send_command(
             command
         )
 
-        return JSONResponse(
-            {
-                "success": True,
-                "response": response,
-                "balance": (
-                    memory.get_balance(
-                        "Banker"
-                    )
-                ),
-                "knowledge_count": len(
-                    memory.data.get(
-                        "knowledge",
-                        [],
-                    )
-                ),
-                "economy_mode": (
-                    economy.get_mode()
-                ),
-                "pending_approvals": len(
-                    memory.get_approvals(
-                        status="pending"
-                    )
-                ),
-            }
-        )
+        return {
+            "success": True,
+            "response": response,
+            "balance": memory.get_balance(
+                "Banker"
+            ),
+            "knowledge_count": len(
+                memory.data.get(
+                    "knowledge",
+                    [],
+                )
+            ),
+            "economy_mode": economy.get_mode(),
+            "safety": get_safety_state(),
+            "pending_approvals": get_pending_approvals(),
+        }
 
     except Exception as exc:
 
         memory.log(
             "System",
-            (
-                "Command failed: "
-                f"{str(exc)}"
-            ),
+            f"Command failed: {exc}",
             level="error",
         )
 
@@ -352,89 +375,63 @@ async def send_command(
                 "success": False,
                 "response": (
                     "Command failed: "
-                    f"{str(exc)}"
+                    + str(exc)
                 ),
             },
             status_code=500,
         )
 
 
-# ======================================================================
-# SYSTEM STATUS API
-# ======================================================================
+# ================================================================
+# STATUS
+# ================================================================
 
 @app.get("/api/status")
 async def api_status():
 
     return {
+        "success": True,
         "world": world.get_summary(),
-        "agents": (
-            memory.get_all_agent_status()
-        ),
-        "balance": (
-            memory.get_balance(
-                "Banker"
-            )
-        ),
+        "agents": memory.get_all_agent_status(),
+        "balance": memory.get_balance("Banker"),
         "knowledge_count": len(
             memory.data.get(
                 "knowledge",
                 [],
             )
         ),
-        "pending_tasks": (
-            memory.get_tasks(
-                status="pending"
-            )
+        "pending_tasks": memory.get_tasks(
+            status="pending",
         ),
-        "logs": memory.get_logs(20),
-        "economy": (
-            economy.get_economy_report()
-        ),
-        "mode": economy.get_mode(),
-        "approvals": (
-            memory.get_approvals()
-        ),
-        "pending_approvals": (
-            memory.get_approvals(
-                status="pending"
-            )
-        ),
+        "economy": economy.get_economy_report(),
+        "safety": get_safety_state(),
+        "approvals": get_pending_approvals(),
     }
 
 
-# ======================================================================
-# AGENT STATUS
-# ======================================================================
+# ================================================================
+# AGENTS
+# ================================================================
 
 @app.get("/api/agents")
 async def api_agents():
 
     return {
-        "agents": (
-            memory.get_all_agent_status()
-        )
+        "success": True,
+        "agents": memory.get_all_agent_status(),
     }
 
 
-# ======================================================================
-# COGNITIVE STATE
-# ======================================================================
-
 @app.get("/api/agents/{name}/cognitive")
-async def api_agent_cognitive(
-    name: str,
-):
+async def api_agent_cognitive(name: str):
 
     agent = agents.get(name)
 
-    if agent is None:
+    if not agent:
         return JSONResponse(
             {
                 "success": False,
-                "error": (
-                    f"Unknown agent: {name}"
-                ),
+                "error": f"Unknown agent: {name}",
             },
             status_code=404,
         )
@@ -448,65 +445,214 @@ async def api_agent_cognitive(
     }
 
 
-# ======================================================================
+# ================================================================
 # TOOLS
-# ======================================================================
+# ================================================================
 
 @app.get("/api/tools")
 async def api_tools():
 
     return {
+        "success": True,
         "mode": economy.get_mode(),
-        "tools": (
-            tools.list_tools()
-        ),
+        "safety": get_safety_state(),
+        "tools": tools.list_tools(),
+        "capabilities": tools.get_capabilities(),
     }
 
 
-# ======================================================================
-# APPROVALS
-# ======================================================================
+# ================================================================
+# CREATOR MODE CONTROL
+# ================================================================
+
+@app.post("/api/mode")
+async def set_mode(
+    mode: str = Form(...),
+):
+
+    requested_mode = (
+        str(mode)
+        .strip()
+        .lower()
+    )
+
+    if requested_mode == "live":
+        requested_mode = "real"
+
+    if requested_mode == "sim":
+        requested_mode = "simulation"
+
+    if requested_mode not in {
+        "simulation",
+        "real",
+    }:
+
+        return JSONResponse(
+            {
+                "success": False,
+                "error": (
+                    "Invalid mode. "
+                    "Use simulation or live."
+                ),
+            },
+            status_code=400,
+        )
+
+    old_mode = economy.get_mode()
+
+    result = economy.set_mode(
+        requested_mode
+    )
+
+    new_mode = economy.get_mode()
+
+    memory.log(
+        "Creator",
+        (
+            f"Creator changed operating mode: "
+            f"{old_mode} -> {new_mode}"
+        ),
+    )
+
+    return {
+        "success": True,
+        "message": result,
+        "old_mode": old_mode,
+        "mode": new_mode,
+        "safety": get_safety_state(),
+    }
+
+
+# ================================================================
+# CREATOR APPROVALS
+# ================================================================
 
 @app.get("/api/approvals")
 async def api_approvals():
 
     return {
-        "approvals": (
-            memory.get_approvals()
-        ),
-        "pending": (
-            memory.get_approvals(
-                status="pending"
-            )
-        ),
+        "success": True,
+        "pending": get_pending_approvals(),
+        "all": get_all_approvals(),
     }
 
 
-@app.post("/api/approvals/{approval_id}/decide")
+@app.post(
+    "/api/approvals/{approval_id}/decide"
+)
 async def decide_approval(
     approval_id: int,
     allow: bool = Form(...),
+    reason: str = Form(
+        "Creator decision from dashboard"
+    ),
 ):
 
-    result = tools.approvals.decide(
-        approval_id=approval_id,
-        allow=allow,
+    approval = tools.approval_gate.get(
+        approval_id
+    )
+
+    if not approval:
+
+        return JSONResponse(
+            {
+                "success": False,
+                "error": (
+                    f"Approval #{approval_id} "
+                    "does not exist."
+                ),
+            },
+            status_code=404,
+        )
+
+    if approval.get("status") != "pending":
+
+        return JSONResponse(
+            {
+                "success": False,
+                "error": (
+                    f"Approval #{approval_id} "
+                    f"is already "
+                    f"{approval.get('status')}."
+                ),
+            },
+            status_code=409,
+        )
+
+    message = tools.approval_gate.decide(
+        approval_id,
+        allow,
+    )
+
+    memory.log(
+        "Creator",
+        (
+            f"Creator decision for approval "
+            f"#{approval_id}: "
+            f"{'APPROVED' if allow else 'DENIED'}"
+            f" | {reason}"
+        ),
     )
 
     return {
         "success": True,
-        "result": result,
-        "approval": (
-            tools.approvals.get(
+        "approval_id": approval_id,
+        "decision": (
+            "approved"
+            if allow
+            else "denied"
+        ),
+        "message": message,
+        "approval": format_approval(
+            tools.approval_gate.get(
                 approval_id
             )
         ),
+        "pending": get_pending_approvals(),
     }
 
 
-# ======================================================================
-# WORLD
-# ======================================================================
+# ================================================================
+# DASHBOARD COMPATIBILITY ENDPOINTS
+# ================================================================
+
+@app.post(
+    "/api/approvals/{approval_id}/approve"
+)
+async def approve_approval(
+    approval_id: int,
+    reason: str = Form(
+        "Creator approved from dashboard"
+    ),
+):
+
+    return await decide_approval(
+        approval_id=approval_id,
+        allow=True,
+        reason=reason,
+    )
+
+
+@app.post(
+    "/api/approvals/{approval_id}/deny"
+)
+async def deny_approval(
+    approval_id: int,
+    reason: str = Form(
+        "Creator denied from dashboard"
+    ),
+):
+
+    return await decide_approval(
+        approval_id=approval_id,
+        allow=False,
+        reason=reason,
+    )
+
+
+# ================================================================
+# TIME
+# ================================================================
 
 @app.post("/api/advance_time")
 async def advance_time():
@@ -514,33 +660,26 @@ async def advance_time():
     world.advance_time()
 
     return {
-        "message": "Time advanced",
+        "success": True,
+        "message": "Time advanced.",
         "world": world.get_summary(),
     }
 
 
-# ======================================================================
+# ================================================================
 # VAULT
-# ======================================================================
+# ================================================================
 
 @app.get(
     "/vault",
     response_class=HTMLResponse,
 )
-async def vault(
-    request: Request,
-):
+async def vault(request: Request):
 
     rooms = {
-        "Boss office": [
-            "Boss"
-        ],
-        "Bank": [
-            "Banker"
-        ],
-        "Research floor": [
-            "InfoFarmer"
-        ],
+        "Boss office": ["Boss"],
+        "Bank": ["Banker"],
+        "Research floor": ["InfoFarmer"],
         "Planning room": [
             "OpportunityAgent"
         ],
@@ -551,18 +690,15 @@ async def vault(
         {
             "request": request,
             "rooms": rooms,
-            "approvals": (
-                memory.get_approvals(
-                    status="pending"
-                )
-            ),
+            "world": world.get_summary(),
+            "economy": economy.get_economy_report(),
         },
     )
 
 
-# ======================================================================
+# ================================================================
 # AGENT PAGE
-# ======================================================================
+# ================================================================
 
 @app.get(
     "/agent/{name}",
@@ -575,6 +711,7 @@ async def agent_page(
 ):
 
     if name not in SHEETS:
+
         return HTMLResponse(
             "No such agent",
             status_code=404,
@@ -583,10 +720,7 @@ async def agent_page(
     status = (
         memory
         .get_all_agent_status()
-        .get(
-            name,
-            {},
-        )
+        .get(name, {})
         .get(
             "status",
             "unknown",
@@ -598,6 +732,7 @@ async def agent_page(
     for item in memory.get_logs(40):
 
         if item.get("agent") == name:
+
             logs.append(
                 item.get(
                     "message",
@@ -613,13 +748,12 @@ async def agent_page(
             memory.data.get(
                 "knowledge",
                 [],
-            )
+            ),
+            start=1,
         ):
 
             if "id" not in item:
-                item["id"] = (
-                    index + 1
-                )
+                item["id"] = index
 
             if (
                 bool(archived)
@@ -632,8 +766,6 @@ async def agent_page(
             ):
                 notes.append(item)
 
-    agent = agents[name]
-
     return templates.TemplateResponse(
         "agent.html",
         {
@@ -644,15 +776,16 @@ async def agent_page(
             "logs": logs[:10],
             "notes": notes,
             "cognitive_state": (
-                agent.get_cognitive_state()
+                agents[name]
+                .get_cognitive_state()
             ),
         },
     )
 
 
-# ======================================================================
+# ================================================================
 # INFOFARMER NOTES
-# ======================================================================
+# ================================================================
 
 @app.post(
     "/agent/InfoFarmer/note"
@@ -681,12 +814,6 @@ async def note_action(
         ):
             item["archived"] = True
 
-        if (
-            item.get("id") == note_id
-            and action == "restore"
-        ):
-            item["archived"] = False
-
         kept.append(item)
 
     memory.data["knowledge"] = kept
@@ -700,50 +827,67 @@ async def note_action(
     )
 
 
-# ======================================================================
-# HEALTH CHECK
-# ======================================================================
+# ================================================================
+# HEALTH
+# ================================================================
 
 @app.get("/health")
 async def health():
 
     return {
         "status": "ok",
-        "service": "agent-simulation",
+        "application": "agent-simulation",
+        "version": "2.0.0",
         "mode": economy.get_mode(),
-        "agents": len(agents),
-        "tools": len(
-            tools.list_tools()
+        "agents": list(
+            agents.keys()
+        ),
+        "pending_approvals": len(
+            get_pending_approvals()
         ),
     }
 
 
-# ======================================================================
+# ================================================================
 # STARTUP
-# ======================================================================
+# ================================================================
 
 @app.on_event("startup")
 async def startup_event():
 
     memory.log(
         "System",
+        "Agent Simulation started.",
+    )
+
+    memory.log(
+        "System",
         (
-            "Agent Simulation started. "
-            f"Mode: {economy.get_mode().upper()}"
+            "Operating mode: "
+            + economy.get_mode()
+        ),
+    )
+
+    memory.log(
+        "System",
+        (
+            "Creator Approval Gate active. "
+            "Protected consequential actions "
+            "require explicit approval."
         ),
     )
 
 
-# ======================================================================
+# ================================================================
 # LOCAL ENTRY POINT
-# ======================================================================
+# ================================================================
 
 if __name__ == "__main__":
 
     port = int(
         os.environ.get(
             "PORT",
-            8000,
+            "8000",
         )
     )
 
