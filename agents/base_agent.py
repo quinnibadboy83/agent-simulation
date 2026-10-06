@@ -1,16 +1,8 @@
 """
 Base Agent
 ----------
+
 Common foundation for every autonomous agent.
-
-Each agent has:
-
-- a public/shared state
-- a private CognitiveRoom
-- tools
-- tasks
-- objectives
-- status
 """
 
 from typing import Any, Dict, List, Optional
@@ -59,16 +51,15 @@ class BaseAgent:
             },
         )
 
-    # ------------------------------------------------------------------
-    # Perception
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # PERCEPTION / MEMORY / REASONING
+    # ---------------------------------------------------------
 
     def perceive(
         self,
         input_text: str,
         source: str = "command",
-    ) -> Dict[str, Any]:
-
+    ):
         observation = self.cognitive_room.observe(
             input_text,
             source=source,
@@ -81,77 +72,63 @@ class BaseAgent:
 
         return observation
 
-    # ------------------------------------------------------------------
-    # Memory
-    # ------------------------------------------------------------------
-
     def remember(
         self,
         content: str,
         category: str = "general",
-    ) -> Dict[str, Any]:
-
+    ):
         return self.cognitive_room.remember(
             content,
             category=category,
         )
 
-    # ------------------------------------------------------------------
-    # Reasoning
-    # ------------------------------------------------------------------
-
     def think(
         self,
         input_text: str,
-    ) -> str:
-
-        input_lower = input_text.lower()
-
+    ):
         self.cognitive_room.think(
             f"Considering input: {input_text}",
             kind="reasoning",
         )
 
+        lowered = input_text.lower()
+
         if (
-            "status" in input_lower
-            or "report" in input_lower
+            "status" in lowered
+            or "report" in lowered
         ):
             return self.get_status_report()
 
-        if "help" in input_lower:
+        if "help" in lowered:
             return self.get_help()
 
         return (
             f"{self.name} received: "
             f"'{input_text}'. "
-            "Awaiting clearer instructions."
+            "Awaiting a clearer objective."
         )
 
-    # ------------------------------------------------------------------
-    # Planning
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # PLANNING
+    # ---------------------------------------------------------
 
     def plan(
         self,
         steps: List[str],
-    ) -> None:
-
+    ):
         self.cognitive_room.set_plan(
             steps
         )
 
-    # ------------------------------------------------------------------
-    # Tool execution
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # TOOLS
+    # ---------------------------------------------------------
 
     def execute_tool(
         self,
         tool_name: str,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-
-        # Some older agents pass their own "agent" keyword.
-        # Prevent Python from receiving two values for agent.
+        **kwargs,
+    ):
         tool_agent = kwargs.pop(
             "agent",
             self.name,
@@ -170,16 +147,26 @@ class BaseAgent:
 
         return result
 
-    # ------------------------------------------------------------------
-    # Observation / learning
-    # ------------------------------------------------------------------
+    def request_tool_approval(
+        self,
+        tool_name: str,
+        parameters: Dict[str, Any],
+        description: Optional[str] = None,
+        risk: str = "high",
+    ):
+        return self.tools.request_approval(
+            tool_name=tool_name,
+            agent=self.name,
+            parameters=parameters,
+            description=description,
+            risk=risk,
+        )
 
     def observe_result(
         self,
         result: Any,
         source: str = "tool",
-    ) -> None:
-
+    ):
         self.cognitive_room.observe(
             str(result),
             source=source,
@@ -190,34 +177,26 @@ class BaseAgent:
             category="result",
         )
 
-    # ------------------------------------------------------------------
-    # Tasks
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # TASKS
+    # ---------------------------------------------------------
 
-    def get_tasks(
-        self,
-    ) -> List[Dict[str, Any]]:
-
+    def get_tasks(self):
         return self.memory.get_tasks(
-            assigned_to=self.name,
+            assigned_to=self.name
         )
 
-    def get_pending_tasks(
-        self,
-    ) -> List[Dict[str, Any]]:
-
+    def get_pending_tasks(self):
         return [
             task
             for task in self.get_tasks()
-            if task.get("status")
-            == "pending"
+            if task.get("status") == "pending"
         ]
 
     def set_current_task(
         self,
         task: Optional[Dict[str, Any]],
-    ) -> None:
-
+    ):
         self.current_task = task
 
         if task:
@@ -235,14 +214,120 @@ class BaseAgent:
 
         self._publish_status()
 
-    # ------------------------------------------------------------------
-    # Status
-    # ------------------------------------------------------------------
-
-    def get_status_report(
+    def complete_current_task(
         self,
-    ) -> str:
+        notes: str = "",
+    ):
+        if not self.current_task:
+            return None
 
+        task_id = self.current_task.get(
+            "id"
+        )
+
+        result = self.memory.update_task(
+            task_id,
+            "completed",
+            notes=notes,
+        )
+
+        self.set_current_task(None)
+
+        return result
+
+    def fail_current_task(
+        self,
+        reason: str = "",
+    ):
+        if not self.current_task:
+            return None
+
+        task_id = self.current_task.get(
+            "id"
+        )
+
+        result = self.memory.update_task(
+            task_id,
+            "failed",
+            notes=reason,
+        )
+
+        self.set_current_task(None)
+
+        return result
+
+    # ---------------------------------------------------------
+    # OBJECTIVES
+    # ---------------------------------------------------------
+
+    def set_objective(
+        self,
+        objective: str,
+    ):
+        self.cognitive_room.set_objective(
+            objective
+        )
+
+        self._publish_status()
+
+    def clear_objective(self):
+        self.cognitive_room.clear_objective()
+        self._publish_status()
+
+    # ---------------------------------------------------------
+    # COMMUNICATION
+    # ---------------------------------------------------------
+
+    def receive_message(
+        self,
+        sender: str,
+        message: str,
+    ):
+        return self.cognitive_room.receive_message(
+            sender,
+            message,
+        )
+
+    def unread_messages(self):
+        return self.cognitive_room.unread_messages()
+
+    # ---------------------------------------------------------
+    # STATUS
+    # ---------------------------------------------------------
+
+    def update_status(
+        self,
+        new_status: str,
+    ):
+        self.status = new_status
+        self.cognitive_room.status = new_status
+
+        self._publish_status()
+
+        self.memory.log(
+            self.name,
+            f"Status changed to: {new_status}",
+        )
+
+    def _publish_status(self):
+        self.memory.set_agent_status(
+            self.name,
+            {
+                "role": self.role,
+                "status": self.status,
+                "description": self.description,
+                "objective": (
+                    self.cognitive_room.objective
+                ),
+                "current_task": self.current_task,
+            },
+        )
+
+    # ---------------------------------------------------------
+    # REPORTING
+    # ---------------------------------------------------------
+
+    def get_status_report(self):
         status = self.memory.get_agent_status(
             self.name
         )
@@ -250,10 +335,12 @@ class BaseAgent:
         pending = self.get_pending_tasks()
 
         report = (
-            f"**{self.name}** ({self.role})\n"
+            f"**{self.name}** "
+            f"({self.role})\n"
             f"Status: "
             f"{status.get('status', 'unknown')}\n"
-            f"Pending tasks: {len(pending)}\n"
+            f"Pending tasks: "
+            f"{len(pending)}\n"
         )
 
         objective = (
@@ -276,156 +363,81 @@ class BaseAgent:
 
         return report
 
-    def get_help(
-        self,
-    ) -> str:
-
+    def get_help(self):
         return (
             f"I am {self.name}, "
             f"the {self.role}. "
-            "Give me a clear objective or "
-            "task and I will work through "
-            "the available tools."
+            "Give me a clear objective or task "
+            "and I will work through the tools "
+            "available to me."
         )
 
-    # ------------------------------------------------------------------
-    # Objectives
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # COGNITIVE STATE
+    # ---------------------------------------------------------
 
-    def set_objective(
-        self,
-        objective: str,
-    ) -> None:
-
-        self.cognitive_room.set_objective(
-            objective
-        )
-
-        self._publish_status()
-
-    def clear_objective(
-        self,
-    ) -> None:
-
-        self.cognitive_room.clear_objective()
-
-        self._publish_status()
-
-    # ------------------------------------------------------------------
-    # Messages
-    # ------------------------------------------------------------------
-
-    def receive_message(
-        self,
-        sender: str,
-        message: str,
-    ) -> None:
-
-        self.cognitive_room.receive_message(
-            sender,
-            message,
-        )
-
-    def unread_messages(
-        self,
-    ) -> List[Dict[str, Any]]:
-
-        return (
-            self.cognitive_room
-            .unread_messages()
-        )
-
-    # ------------------------------------------------------------------
-    # Status updates
-    # ------------------------------------------------------------------
-
-    def update_status(
-        self,
-        new_status: str,
-    ) -> None:
-
-        self.status = new_status
-
-        self.cognitive_room.status = (
-            new_status
-        )
-
-        self._publish_status()
-
-        self.memory.log(
-            self.name,
-            f"Status changed to: {new_status}",
-        )
-
-    def _publish_status(
-        self,
-    ) -> None:
-
-        self.memory.set_agent_status(
-            self.name,
-            {
-                "role": self.role,
-                "status": self.status,
-                "description": self.description,
-                "objective": (
-                    self.cognitive_room.objective
-                ),
-                "current_task": (
-                    self.current_task
-                ),
-            },
-        )
-
-    # ------------------------------------------------------------------
-    # Cognitive state
-    # ------------------------------------------------------------------
-
-    def get_cognitive_state(
-        self,
-    ) -> Dict[str, Any]:
-
+    def get_cognitive_state(self):
         return self.cognitive_room.snapshot()
 
-    # ------------------------------------------------------------------
-    # Standard autonomous cycle
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # AUTONOMOUS CYCLE
+    # ---------------------------------------------------------
 
     def run_cycle(
         self,
         input_text: str,
-    ) -> Dict[str, Any]:
-
+    ):
         self.update_status(
             "thinking"
         )
 
-        self.perceive(
-            input_text
-        )
+        try:
+            self.perceive(
+                input_text
+            )
 
-        self.remember(
-            input_text,
-            category="input",
-        )
+            self.remember(
+                input_text,
+                category="input",
+            )
 
-        reasoning = self.think(
-            input_text
-        )
+            reasoning = self.think(
+                input_text
+            )
 
-        self.cognitive_room.think(
-            reasoning,
-            kind="reasoning_result",
-        )
+            self.cognitive_room.think(
+                str(reasoning),
+                kind="reasoning_result",
+            )
 
-        self.update_status(
-            "idle"
-        )
+            return {
+                "success": True,
+                "agent": self.name,
+                "input": input_text,
+                "reasoning": reasoning,
+                "cognitive_state": (
+                    self.get_cognitive_state()
+                ),
+            }
 
-        return {
-            "agent": self.name,
-            "input": input_text,
-            "reasoning": reasoning,
-            "cognitive_state": (
-                self.get_cognitive_state()
-            ),
-        }
+        except Exception as exc:
+            self.memory.log(
+                self.name,
+                (
+                    f"Cycle failed: "
+                    f"{str(exc)}"
+                ),
+                level="error",
+            )
+
+            return {
+                "success": False,
+                "agent": self.name,
+                "input": input_text,
+                "error": str(exc),
+            }
+
+        finally:
+            self.update_status(
+                "idle"
+            )
