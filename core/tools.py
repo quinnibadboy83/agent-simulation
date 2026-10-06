@@ -1,889 +1,899 @@
 """
-Tool Registry
--------------
+Agent Simulation
+----------------
 
-Central execution gateway for agent tools.
+Main application entry point.
 
-Every agent executes tools through this registry.
+Provides:
 
-The registry enforces:
+- FastAPI web application
+- Creator dashboard
+- Boss command interface
+- Agent status
+- Cognitive state
+- Economy reporting
+- Creator approval queue
+- Creator-controlled operating mode
+- World/time controls
+- Health endpoint
 
-    - tool discovery
-    - simulation mode
-    - real mode
-    - Creator approval
-    - exact agent matching
-    - exact parameter matching
-    - single-use approvals
-    - execution logging
+Architecture:
 
-Important:
-
-REAL mode does not mean unrestricted execution.
-
-Public research tools can operate autonomously.
-
-Consequential/protected tools require an explicit Creator
-approval tied to the exact action.
+Creator
+    ↓
+Dashboard / API
+    ↓
+Boss / Agents
+    ↓
+CognitiveRoom + SharedMemory
+    ↓
+ToolRegistry
+    ↓
+Simulation or protected live-capable tools
 """
 
-from typing import Any, Callable, Dict, List, Optional
+from pathlib import Path
+import os
+from typing import Any, Dict
 
-from .approvals import ApprovalGate
-from .economy import Economy
-from .memory import SharedMemory
-from .research import WebResearch
+import uvicorn
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from core.memory import SharedMemory
+from core.world import World
+from core.economy import Economy
+from core.research import WebResearch
+from core.tools import create_default_tools
+
+from agents.boss import BossAgent
+from agents.banker import BankerAgent
+from agents.info_farmer import InfoFarmerAgent
+from agents.opportunity_agent import OpportunityAgent
 
 
-class ToolRegistry:
+# ================================================================
+# APPLICATION
+# ================================================================
 
-    VALID_MODES = {
-        "simulation",
-        "real",
+app = FastAPI(
+    title="Agent Simulation",
+    description=(
+        "Autonomous multi-agent system with "
+        "Creator-controlled consequential actions."
+    ),
+    version="2.0.0",
+)
+
+
+BASE_DIR = Path(__file__).resolve().parent
+
+STATIC_DIR = BASE_DIR / "ui" / "static"
+TEMPLATE_DIR = BASE_DIR / "ui" / "templates"
+
+
+if STATIC_DIR.exists():
+    app.mount(
+        "/static",
+        StaticFiles(directory=STATIC_DIR),
+        name="static",
+    )
+
+
+templates = Jinja2Templates(
+    directory=TEMPLATE_DIR
+)
+
+
+# ================================================================
+# CORE SERVICES
+# ================================================================
+
+memory = SharedMemory()
+
+world = World(memory)
+
+economy = Economy(memory)
+
+research = WebResearch(memory)
+
+tools = create_default_tools(
+    memory=memory,
+    economy=economy,
+    research=research,
+)
+
+
+# ================================================================
+# AGENTS
+# ================================================================
+
+boss = BossAgent(
+    memory=memory,
+    tools=tools,
+)
+
+banker = BankerAgent(
+    memory=memory,
+    tools=tools,
+)
+
+info_farmer = InfoFarmerAgent(
+    memory=memory,
+    tools=tools,
+)
+
+opportunity_agent = OpportunityAgent(
+    memory=memory,
+    tools=tools,
+    economy=economy,
+)
+
+
+agents = {
+    "Boss": boss,
+    "Banker": banker,
+    "InfoFarmer": info_farmer,
+    "OpportunityAgent": opportunity_agent,
+}
+
+
+# ================================================================
+# AGENT DISPLAY DATA
+# ================================================================
+
+SHEETS = {
+    "Boss": {
+        "role": "Overseer",
+        "voice": "Coordinates the other agents.",
+        "trait": "Does not bypass Creator approval.",
+        "stats": {
+            "Perception": 7,
+            "Intelligence": 8,
+            "Charisma": 6,
+            "Endurance": 7,
+            "Luck": 5,
+        },
+    },
+    "Banker": {
+        "role": "Financial Controller",
+        "voice": "Tracks the ledger and financial state.",
+        "trait": "Guards financial activity.",
+        "stats": {
+            "Perception": 6,
+            "Intelligence": 8,
+            "Charisma": 3,
+            "Endurance": 9,
+            "Luck": 4,
+        },
+    },
+    "InfoFarmer": {
+        "role": "Research Specialist",
+        "voice": "Collects and preserves useful information.",
+        "trait": "Builds the knowledge base.",
+        "stats": {
+            "Perception": 9,
+            "Intelligence": 8,
+            "Charisma": 4,
+            "Endurance": 6,
+            "Luck": 5,
+        },
+    },
+    "OpportunityAgent": {
+        "role": "Opportunity Analyst",
+        "voice": "Looks for realistic opportunities and tests.",
+        "trait": "Analyses before recommending action.",
+        "stats": {
+            "Perception": 8,
+            "Intelligence": 7,
+            "Charisma": 5,
+            "Endurance": 6,
+            "Luck": 6,
+        },
+    },
+}
+
+
+# ================================================================
+# HELPERS
+# ================================================================
+
+def get_safety_state() -> Dict[str, Any]:
+    """
+    Return the current Creator safety state.
+    """
+
+    policy = economy.get_mode_policy()
+
+    return {
+        "mode": policy["mode"],
+        "label": policy["label"],
+        "simulation": policy["simulation"],
+        "live": policy["live"],
+        "live_tools_available": policy[
+            "live_tools_available"
+        ],
+        "protected_actions_allowed": policy[
+            "protected_actions_allowed"
+        ],
+        "creator_approval_required": policy[
+            "creator_approval_required"
+        ],
+        "description": policy["description"],
     }
 
-    def __init__(
-        self,
-        memory: SharedMemory,
-        economy: Optional[Economy] = None,
-        research: Optional[WebResearch] = None,
-    ):
-        self.memory = memory
-        self.economy = economy
-        self.research = research
 
-        self.tools: Dict[str, Dict[str, Any]] = {}
-
-        self.approvals = ApprovalGate(memory)
-
-    # ------------------------------------------------------------------
-    # REGISTRATION
-    # ------------------------------------------------------------------
-
-    def register(
-        self,
-        name: str,
-        description: str,
-        func: Callable,
-        requires_approval: bool = False,
-        live_capable: bool = False,
-        simulation_safe: bool = True,
-    ) -> None:
-        """
-        Register a tool with the central registry.
-        """
-
-        if not name:
-            raise ValueError(
-                "Tool name cannot be empty."
-            )
-
-        if not callable(func):
-            raise TypeError(
-                f"Tool '{name}' must have a callable function."
-            )
-
-        self.tools[name] = {
-            "name": name,
-            "description": description,
-            "func": func,
-            "requires_approval": bool(
-                requires_approval
-            ),
-            "live_capable": bool(
-                live_capable
-            ),
-            "simulation_safe": bool(
-                simulation_safe
-            ),
-        }
-
-    # ------------------------------------------------------------------
-    # DISCOVERY
-    # ------------------------------------------------------------------
-
-    def get_tool(
-        self,
-        name: str,
-    ) -> Optional[Dict[str, Any]]:
-        return self.tools.get(name)
-
-    def list_tools(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "name": tool["name"],
-                "description": tool["description"],
-                "requires_approval": tool[
-                    "requires_approval"
-                ],
-                "live_capable": tool[
-                    "live_capable"
-                ],
-                "simulation_safe": tool[
-                    "simulation_safe"
-                ],
-            }
-            for tool in self.tools.values()
-        ]
-
-    def get_capabilities(self) -> List[Dict[str, Any]]:
-        return self.list_tools()
-
-    # ------------------------------------------------------------------
-    # MODE
-    # ------------------------------------------------------------------
-
-    def get_mode(self) -> str:
-        """
-        Return the current economy/system mode.
-
-        If no economy object exists, default to simulation.
-        """
-
-        if self.economy is None:
-            return "simulation"
-
-        try:
-            mode = self.economy.get_mode()
-
-            if mode in self.VALID_MODES:
-                return mode
-
-        except Exception:
-            pass
-
-        try:
-            if self.economy.is_real():
-                return "real"
-
-        except Exception:
-            pass
-
-        return "simulation"
-
-    def is_real_mode(self) -> bool:
-        return self.get_mode() == "real"
-
-    def is_simulation_mode(self) -> bool:
-        return self.get_mode() == "simulation"
-
-    # ------------------------------------------------------------------
-    # APPROVAL MATCHING
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _parameters_match(
-        requested: Dict[str, Any],
-        approved: Dict[str, Any],
-    ) -> bool:
-        """
-        Exact parameter comparison.
-
-        We deliberately do not perform fuzzy matching.
-
-        An approval for one action must not authorize a different
-        action.
-        """
-
-        return requested == approved
-
-    def _find_matching_approval(
-        self,
-        tool_name: str,
-        agent: str,
-        parameters: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Find an already-approved request matching the exact action.
-
-        Only approved requests are considered.
-
-        Consumed requests are never returned.
-        """
-
-        approvals = self.approvals.list_all()
-
-        for approval in approvals:
-
-            if approval.get("status") != "approved":
-                continue
-
-            if approval.get("tool") != tool_name:
-                continue
-
-            if approval.get("agent") != agent:
-                continue
-
-            approved_payload = approval.get(
-                "payload",
-                {},
-            )
-
-            if not self._parameters_match(
-                parameters,
-                approved_payload,
-            ):
-                continue
-
-            return approval
-
-        return None
-
-    # ------------------------------------------------------------------
-    # REQUEST CREATOR APPROVAL
-    # ------------------------------------------------------------------
-
-    def request_approval(
-        self,
-        tool_name: str,
-        agent: str,
-        parameters: Dict[str, Any],
-        description: Optional[str] = None,
-        plan: Optional[List[str]] = None,
-        risk: str = "high",
-    ) -> Dict[str, Any]:
-        """
-        Create a Creator approval request.
-
-        The request contains an exact snapshot of the parameters
-        that the agent wants to use.
-        """
-
-        tool = self.get_tool(tool_name)
-
-        if tool is None:
-            return {
-                "success": False,
-                "error": (
-                    f"Tool '{tool_name}' not found."
-                ),
-            }
-
-        approval = self.approvals.request(
-            tool_name=tool_name,
-            reason=(
-                description
-                or tool["description"]
-            ),
-            payload=parameters,
-            agent=agent,
-            risk=risk,
-        )
-
-        # Store the plan as additional metadata so the Creator
-        # can understand why the agent wants the action.
-        if plan:
-            for item in self.memory.data.get(
-                "approvals",
-                [],
-            ):
-                if item.get("id") == approval["id"]:
-                    item["plan"] = list(plan)
-                    break
-
-            self.memory.save()
-
-            approval["plan"] = list(plan)
-
-        return {
-            "success": False,
-            "blocked": True,
-            "requires_approval": True,
-            "approval_id": approval["id"],
-            "approval": approval,
-            "message": (
-                f"Creator approval required for "
-                f"'{tool_name}'. "
-                f"Request #{approval['id']}."
-            ),
-        }
-
-    # ------------------------------------------------------------------
-    # EXECUTION
-    # ------------------------------------------------------------------
-
-    def execute(
-        self,
-        name: str,
-        agent: str = "Unknown",
-        approval_id: Optional[int] = None,
-        approved: bool = False,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """
-        Execute a registered tool.
-
-        Protected tools in REAL mode require an exact Creator
-        approval before execution.
-
-        The approval is consumed BEFORE the tool is called.
-        """
-
-        tool = self.get_tool(name)
-
-        if tool is None:
-            return {
-                "success": False,
-                "error": (
-                    f"Tool '{name}' not found."
-                ),
-            }
-
-        mode = self.get_mode()
-
-        # --------------------------------------------------------------
-        # SIMULATION SAFETY
-        # --------------------------------------------------------------
-
-        if (
-            mode == "simulation"
-            and not tool.get(
-                "simulation_safe",
-                True,
-            )
-        ):
-            self.memory.log(
-                "ToolSystem",
-                (
-                    f"Blocked '{name}' for {agent}: "
-                    "not simulation-safe."
-                ),
-                level="warning",
-            )
-
-            return {
-                "success": False,
-                "blocked": True,
-                "tool": name,
-                "agent": agent,
-                "mode": mode,
-                "error": (
-                    f"Tool '{name}' is not permitted "
-                    "in simulation mode."
-                ),
-            }
-
-        # --------------------------------------------------------------
-        # LIVE CAPABILITY
-        # --------------------------------------------------------------
-
-        if (
-            mode == "real"
-            and not tool.get(
-                "live_capable",
-                False,
-            )
-            and tool.get(
-                "requires_approval",
-                False,
-            )
-        ):
-            return {
-                "success": False,
-                "blocked": True,
-                "tool": name,
-                "agent": agent,
-                "mode": mode,
-                "error": (
-                    f"Tool '{name}' is marked as protected "
-                    "but is not declared live-capable."
-                ),
-            }
-
-        # --------------------------------------------------------------
-        # REAL MODE CREATOR APPROVAL
-        # --------------------------------------------------------------
-
-        approval = None
-
-        if (
-            mode == "real"
-            and tool.get(
-                "requires_approval",
-                False,
-            )
-        ):
-
-            # ----------------------------------------------------------
-            # Locate approval
-            # ----------------------------------------------------------
-
-            if approval_id is not None:
-                approval = self.approvals.get(
-                    approval_id
-                )
-
-                if approval is None:
-                    return {
-                        "success": False,
-                        "blocked": True,
-                        "requires_approval": True,
-                        "error": (
-                            f"Approval #{approval_id} "
-                            "does not exist."
-                        ),
-                    }
-
-            else:
-                approval = (
-                    self._find_matching_approval(
-                        tool_name=name,
-                        agent=agent,
-                        parameters=kwargs,
-                    )
-                )
-
-            # ----------------------------------------------------------
-            # No approval
-            # ----------------------------------------------------------
-
-            if approval is None:
-                return self.request_approval(
-                    tool_name=name,
-                    agent=agent,
-                    parameters=kwargs,
-                    description=(
-                        f"REAL mode action "
-                        f"'{name}' requires "
-                        "Creator approval."
-                    ),
-                )
-
-            # ----------------------------------------------------------
-            # Approval status
-            # ----------------------------------------------------------
-
-            if approval.get("status") != "approved":
-                return {
-                    "success": False,
-                    "blocked": True,
-                    "requires_approval": True,
-                    "approval_id": approval.get(
-                        "id"
-                    ),
-                    "error": (
-                        f"Approval #{approval.get('id')} "
-                        f"is {approval.get('status')}, "
-                        "not approved."
-                    ),
-                }
-
-            # ----------------------------------------------------------
-            # Exact tool match
-            # ----------------------------------------------------------
-
-            if approval.get("tool") != name:
-                return {
-                    "success": False,
-                    "blocked": True,
-                    "error": (
-                        "Approval tool does not "
-                        "match requested tool."
-                    ),
-                }
-
-            # ----------------------------------------------------------
-            # Exact agent match
-            # ----------------------------------------------------------
-
-            if approval.get("agent") != agent:
-                return {
-                    "success": False,
-                    "blocked": True,
-                    "error": (
-                        "Approval belongs to "
-                        "another agent."
-                    ),
-                }
-
-            # ----------------------------------------------------------
-            # Exact parameters
-            # ----------------------------------------------------------
-
-            approved_payload = approval.get(
-                "payload",
-                {},
-            )
-
-            if not self._parameters_match(
-                kwargs,
-                approved_payload,
-            ):
-                return {
-                    "success": False,
-                    "blocked": True,
-                    "error": (
-                        "Approval parameters do not "
-                        "match the requested action."
-                    ),
-                }
-
-            # ----------------------------------------------------------
-            # CONSUME BEFORE EXECUTION
-            # ----------------------------------------------------------
-
-            consumed = self.approvals.consume(
-                approval_id=approval["id"],
-                tool_name=name,
-                agent=agent,
-                payload=kwargs,
-            )
-
-            if not consumed:
-                return {
-                    "success": False,
-                    "blocked": True,
-                    "error": (
-                        "Creator approval could not "
-                        "be consumed. The action was not executed."
-                    ),
-                }
-
-        # --------------------------------------------------------------
-        # EXECUTE TOOL
-        # --------------------------------------------------------------
-
-        self.memory.log(
-            "ToolSystem",
-            (
-                f"Executing '{name}' "
-                f"for {agent} "
-                f"in {mode.upper()} mode."
-            ),
-        )
-
-        try:
-            result = tool["func"](
-                **kwargs
-            )
-
-            # Record result against the consumed approval.
-            if approval is not None:
-                self.approvals.mark_execution_result(
-                    approval_id=approval["id"],
-                    success=True,
-                    result=result,
-                )
-
-            self.memory.log(
-                "ToolSystem",
-                (
-                    f"Tool '{name}' "
-                    f"completed for {agent}."
-                ),
-            )
-
-            return {
-                "success": True,
-                "tool": name,
-                "agent": agent,
-                "mode": mode,
-                "result": result,
-            }
-
-        except Exception as exc:
-
-            error_message = str(exc)
-
-            if approval is not None:
-                self.approvals.mark_execution_result(
-                    approval_id=approval["id"],
-                    success=False,
-                    error=error_message,
-                )
-
-            self.memory.log(
-                "ToolSystem",
-                (
-                    f"Tool '{name}' failed: "
-                    f"{error_message}"
-                ),
-                level="error",
-            )
-
-            return {
-                "success": False,
-                "tool": name,
-                "agent": agent,
-                "mode": mode,
-                "error": error_message,
-            }
-
-
-# ======================================================================
-# DEFAULT TOOLS
-# ======================================================================
-
-def create_default_tools(
-    memory: SharedMemory,
-    world,
-    economy: Optional[Economy] = None,
-    research: Optional[WebResearch] = None,
-) -> ToolRegistry:
+def format_approval(approval: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Build the default ToolRegistry used by the application.
+    Convert the internal ApprovalGate representation into a
+    dashboard-friendly representation.
+
+    Internal names remain authoritative:
+
+        tool
+        reason
+        payload
+
+    The UI receives compatible aliases:
+
+        action
+        description
+        parameters
     """
 
-    registry = ToolRegistry(
-        memory=memory,
-        economy=economy,
-        research=research,
+    payload = approval.get("payload") or {}
+
+    return {
+        **approval,
+        "action": approval.get(
+            "tool",
+            "Unknown",
+        ),
+        "description": approval.get(
+            "reason",
+            "",
+        ),
+        "parameters": payload,
+        "tool": approval.get(
+            "tool",
+            "Unknown",
+        ),
+        "payload": payload,
+    }
+
+
+def get_pending_approvals():
+    """
+    Return pending Creator approvals in dashboard format.
+    """
+
+    return [
+        format_approval(item)
+        for item in tools.approval_gate.list_pending()
+    ]
+
+
+def get_all_approvals():
+    """
+    Return all Creator approvals in dashboard format.
+    """
+
+    return [
+        format_approval(item)
+        for item in tools.approval_gate.list_all()
+    ]
+
+
+# ================================================================
+# HOME
+# ================================================================
+
+@app.get(
+    "/",
+    response_class=HTMLResponse,
+)
+async def home(request: Request):
+
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "world": world.get_summary(),
+            "agents": memory.get_all_agent_status(),
+            "logs": memory.get_logs(30),
+            "balance": memory.get_balance("Banker"),
+            "knowledge_count": len(
+                memory.data.get(
+                    "knowledge",
+                    [],
+                )
+            ),
+            "pending_tasks": memory.get_tasks(
+                status="pending",
+            ),
+            "economy": economy.get_economy_report(),
+            "safety": get_safety_state(),
+            "approvals": get_pending_approvals(),
+        },
     )
 
-    # ------------------------------------------------------------------
-    # INTERNAL TOOLS
-    # ------------------------------------------------------------------
 
-    def log_message(
-        agent: str,
-        message: str,
-    ):
-        memory.log(
-            agent,
-            message,
+# ================================================================
+# BOSS COMMAND
+# ================================================================
+
+@app.post("/command")
+async def send_command(
+    command: str = Form(...),
+):
+
+    command = command.strip()
+
+    if not command:
+        return JSONResponse(
+            {
+                "success": False,
+                "response": "Empty command.",
+            },
+            status_code=400,
         )
 
-        return f"Logged: {message}"
-
-    def farm_info(
-        topic: str,
-        agent: str = "InfoFarmer",
-    ):
-        content = (
-            f"Gathered basic information "
-            f"about '{topic}'."
+    try:
+        response = boss.process_command(
+            command
         )
 
-        entry = memory.add_knowledge(
-            source=agent,
-            content=content,
-            tags=[
-                topic.lower(),
-                "farmed",
-            ],
-        )
-
-        world.add_resource(
-            "info_points",
-            5,
-        )
-
-        memory.log(
-            agent,
-            f"Farmed info on: {topic}",
-        )
-
-        return entry
-
-    def check_balance():
         return {
+            "success": True,
+            "response": response,
             "balance": memory.get_balance(
                 "Banker"
-            )
+            ),
+            "knowledge_count": len(
+                memory.data.get(
+                    "knowledge",
+                    [],
+                )
+            ),
+            "economy_mode": economy.get_mode(),
+            "safety": get_safety_state(),
+            "pending_approvals": get_pending_approvals(),
         }
 
-    def create_task(
-        title: str,
-        description: str,
-        assigned_to: str,
-    ):
-        return memory.add_task(
-            title,
-            description,
-            assigned_to,
+    except Exception as exc:
+
+        memory.log(
+            "System",
+            f"Command failed: {exc}",
+            level="error",
         )
 
-    registry.register(
-        "log",
-        "Write a log message.",
-        log_message,
+        return JSONResponse(
+            {
+                "success": False,
+                "response": (
+                    "Command failed: "
+                    + str(exc)
+                ),
+            },
+            status_code=500,
+        )
+
+
+# ================================================================
+# STATUS
+# ================================================================
+
+@app.get("/api/status")
+async def api_status():
+
+    return {
+        "success": True,
+        "world": world.get_summary(),
+        "agents": memory.get_all_agent_status(),
+        "balance": memory.get_balance("Banker"),
+        "knowledge_count": len(
+            memory.data.get(
+                "knowledge",
+                [],
+            )
+        ),
+        "pending_tasks": memory.get_tasks(
+            status="pending",
+        ),
+        "economy": economy.get_economy_report(),
+        "safety": get_safety_state(),
+        "approvals": get_pending_approvals(),
+    }
+
+
+# ================================================================
+# AGENTS
+# ================================================================
+
+@app.get("/api/agents")
+async def api_agents():
+
+    return {
+        "success": True,
+        "agents": memory.get_all_agent_status(),
+    }
+
+
+@app.get("/api/agents/{name}/cognitive")
+async def api_agent_cognitive(name: str):
+
+    agent = agents.get(name)
+
+    if not agent:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": f"Unknown agent: {name}",
+            },
+            status_code=404,
+        )
+
+    return {
+        "success": True,
+        "agent": name,
+        "cognitive_state": (
+            agent.get_cognitive_state()
+        ),
+    }
+
+
+# ================================================================
+# TOOLS
+# ================================================================
+
+@app.get("/api/tools")
+async def api_tools():
+
+    return {
+        "success": True,
+        "mode": economy.get_mode(),
+        "safety": get_safety_state(),
+        "tools": tools.list_tools(),
+        "capabilities": tools.get_capabilities(),
+    }
+
+
+# ================================================================
+# CREATOR MODE CONTROL
+# ================================================================
+
+@app.post("/api/mode")
+async def set_mode(
+    mode: str = Form(...),
+):
+
+    requested_mode = (
+        str(mode)
+        .strip()
+        .lower()
     )
 
-    registry.register(
-        "farm_info",
-        "Farm information on a topic.",
-        farm_info,
+    if requested_mode == "live":
+        requested_mode = "real"
+
+    if requested_mode == "sim":
+        requested_mode = "simulation"
+
+    if requested_mode not in {
+        "simulation",
+        "real",
+    }:
+
+        return JSONResponse(
+            {
+                "success": False,
+                "error": (
+                    "Invalid mode. "
+                    "Use simulation or live."
+                ),
+            },
+            status_code=400,
+        )
+
+    old_mode = economy.get_mode()
+
+    result = economy.set_mode(
+        requested_mode
     )
 
-    registry.register(
-        "check_balance",
-        "Check the current money balance.",
-        check_balance,
+    new_mode = economy.get_mode()
+
+    memory.log(
+        "Creator",
+        (
+            f"Creator changed operating mode: "
+            f"{old_mode} -> {new_mode}"
+        ),
     )
 
-    registry.register(
-        "create_task",
-        "Create a task for another agent.",
-        create_task,
+    return {
+        "success": True,
+        "message": result,
+        "old_mode": old_mode,
+        "mode": new_mode,
+        "safety": get_safety_state(),
+    }
+
+
+# ================================================================
+# CREATOR APPROVALS
+# ================================================================
+
+@app.get("/api/approvals")
+async def api_approvals():
+
+    return {
+        "success": True,
+        "pending": get_pending_approvals(),
+        "all": get_all_approvals(),
+    }
+
+
+@app.post(
+    "/api/approvals/{approval_id}/decide"
+)
+async def decide_approval(
+    approval_id: int,
+    allow: bool = Form(...),
+    reason: str = Form(
+        "Creator decision from dashboard"
+    ),
+):
+
+    approval = tools.approval_gate.get(
+        approval_id
     )
 
-    # ------------------------------------------------------------------
-    # ECONOMY TOOLS
-    # ------------------------------------------------------------------
+    if not approval:
 
-    if economy:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": (
+                    f"Approval #{approval_id} "
+                    "does not exist."
+                ),
+            },
+            status_code=404,
+        )
 
-        def money_mode(
-            mode: Optional[str] = None,
-        ):
-            if mode is None:
-                return (
-                    f"Current economy mode: "
-                    f"{economy.get_mode().upper()}"
+    if approval.get("status") != "pending":
+
+        return JSONResponse(
+            {
+                "success": False,
+                "error": (
+                    f"Approval #{approval_id} "
+                    f"is already "
+                    f"{approval.get('status')}."
+                ),
+            },
+            status_code=409,
+        )
+
+    message = tools.approval_gate.decide(
+        approval_id,
+        allow,
+    )
+
+    memory.log(
+        "Creator",
+        (
+            f"Creator decision for approval "
+            f"#{approval_id}: "
+            f"{'APPROVED' if allow else 'DENIED'}"
+            f" | {reason}"
+        ),
+    )
+
+    return {
+        "success": True,
+        "approval_id": approval_id,
+        "decision": (
+            "approved"
+            if allow
+            else "denied"
+        ),
+        "message": message,
+        "approval": format_approval(
+            tools.approval_gate.get(
+                approval_id
+            )
+        ),
+        "pending": get_pending_approvals(),
+    }
+
+
+# ================================================================
+# DASHBOARD COMPATIBILITY ENDPOINTS
+# ================================================================
+
+@app.post(
+    "/api/approvals/{approval_id}/approve"
+)
+async def approve_approval(
+    approval_id: int,
+    reason: str = Form(
+        "Creator approved from dashboard"
+    ),
+):
+
+    return await decide_approval(
+        approval_id=approval_id,
+        allow=True,
+        reason=reason,
+    )
+
+
+@app.post(
+    "/api/approvals/{approval_id}/deny"
+)
+async def deny_approval(
+    approval_id: int,
+    reason: str = Form(
+        "Creator denied from dashboard"
+    ),
+):
+
+    return await decide_approval(
+        approval_id=approval_id,
+        allow=False,
+        reason=reason,
+    )
+
+
+# ================================================================
+# TIME
+# ================================================================
+
+@app.post("/api/advance_time")
+async def advance_time():
+
+    world.advance_time()
+
+    return {
+        "success": True,
+        "message": "Time advanced.",
+        "world": world.get_summary(),
+    }
+
+
+# ================================================================
+# VAULT
+# ================================================================
+
+@app.get(
+    "/vault",
+    response_class=HTMLResponse,
+)
+async def vault(request: Request):
+
+    rooms = {
+        "Boss office": ["Boss"],
+        "Bank": ["Banker"],
+        "Research floor": ["InfoFarmer"],
+        "Planning room": [
+            "OpportunityAgent"
+        ],
+    }
+
+    return templates.TemplateResponse(
+        "vault.html",
+        {
+            "request": request,
+            "rooms": rooms,
+            "world": world.get_summary(),
+            "economy": economy.get_economy_report(),
+        },
+    )
+
+
+# ================================================================
+# AGENT PAGE
+# ================================================================
+
+@app.get(
+    "/agent/{name}",
+    response_class=HTMLResponse,
+)
+async def agent_page(
+    request: Request,
+    name: str,
+    archived: int = 0,
+):
+
+    if name not in SHEETS:
+
+        return HTMLResponse(
+            "No such agent",
+            status_code=404,
+        )
+
+    status = (
+        memory
+        .get_all_agent_status()
+        .get(name, {})
+        .get(
+            "status",
+            "unknown",
+        )
+    )
+
+    logs = []
+
+    for item in memory.get_logs(40):
+
+        if item.get("agent") == name:
+
+            logs.append(
+                item.get(
+                    "message",
+                    str(item),
                 )
-
-            return economy.set_mode(
-                mode
             )
 
-        def find_opportunity(
-            name: str,
-            description: str,
-            startup_cost: float = 50,
-            expected_expenses: float = 20,
-            expected_revenue: float = 150,
-            risk: str = "medium",
+    notes = []
+
+    if name == "InfoFarmer":
+
+        for index, item in enumerate(
+            memory.data.get(
+                "knowledge",
+                [],
+            ),
+            start=1,
         ):
-            return economy.create_opportunity(
-                name=name,
-                description=description,
-                startup_cost=startup_cost,
-                expected_expenses=expected_expenses,
-                expected_revenue=expected_revenue,
-                risk=risk,
-            )
 
-        def analyse_opportunity(
-            opp_id: int,
+            if "id" not in item:
+                item["id"] = index
+
+            if (
+                bool(archived)
+                == bool(
+                    item.get(
+                        "archived",
+                        False,
+                    )
+                )
+            ):
+                notes.append(item)
+
+    return templates.TemplateResponse(
+        "agent.html",
+        {
+            "request": request,
+            "name": name,
+            "sheet": SHEETS[name],
+            "status": status,
+            "logs": logs[:10],
+            "notes": notes,
+            "cognitive_state": (
+                agents[name]
+                .get_cognitive_state()
+            ),
+        },
+    )
+
+
+# ================================================================
+# INFOFARMER NOTES
+# ================================================================
+
+@app.post(
+    "/agent/InfoFarmer/note"
+)
+async def note_action(
+    note_id: int = Form(...),
+    action: str = Form(...),
+):
+
+    kept = []
+
+    for item in memory.data.get(
+        "knowledge",
+        [],
+    ):
+
+        if (
+            item.get("id") == note_id
+            and action == "delete"
         ):
-            return economy.analyse_opportunity(
-                opp_id
-            )
+            continue
 
-        def list_opportunities(
-            status: Optional[str] = None,
+        if (
+            item.get("id") == note_id
+            and action == "archive"
         ):
-            return economy.list_opportunities(
-                status
-            )
+            item["archived"] = True
 
-        def create_experiment(
-            opp_id: int,
-            budget: float,
-            notes: str = "",
-        ):
-            return economy.create_experiment(
-                opp_id,
-                budget,
-                notes,
-            )
+        kept.append(item)
 
-        def complete_experiment(
-            exp_id: int,
-            revenue: float,
-            extra_expenses: float = 0.0,
-            notes: str = "",
-        ):
-            return economy.complete_experiment(
-                exp_id,
-                revenue,
-                extra_expenses,
-                notes,
-            )
+    memory.data["knowledge"] = kept
 
-        def economy_report():
-            return economy.get_economy_report()
+    memory.save()
 
-        registry.register(
-            "money_mode",
-            "Get or set economy mode.",
-            money_mode,
+    return HTMLResponse(
+        "<script>"
+        "location='/agent/InfoFarmer'"
+        "</script>"
+    )
+
+
+# ================================================================
+# HEALTH
+# ================================================================
+
+@app.get("/health")
+async def health():
+
+    return {
+        "status": "ok",
+        "application": "agent-simulation",
+        "version": "2.0.0",
+        "mode": economy.get_mode(),
+        "agents": list(
+            agents.keys()
+        ),
+        "pending_approvals": len(
+            get_pending_approvals()
+        ),
+    }
+
+
+# ================================================================
+# STARTUP
+# ================================================================
+
+@app.on_event("startup")
+async def startup_event():
+
+    memory.log(
+        "System",
+        "Agent Simulation started.",
+    )
+
+    memory.log(
+        "System",
+        (
+            "Operating mode: "
+            + economy.get_mode()
+        ),
+    )
+
+    memory.log(
+        "System",
+        (
+            "Creator Approval Gate active. "
+            "Protected consequential actions "
+            "require explicit approval."
+        ),
+    )
+
+
+# ================================================================
+# LOCAL ENTRY POINT
+# ================================================================
+
+if __name__ == "__main__":
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            "8000",
         )
+    )
 
-        registry.register(
-            "find_opportunity",
-            "Create a new economic opportunity.",
-            find_opportunity,
-        )
-
-        registry.register(
-            "analyse_opportunity",
-            "Analyse an economic opportunity.",
-            analyse_opportunity,
-        )
-
-        registry.register(
-            "list_opportunities",
-            "List economic opportunities.",
-            list_opportunities,
-        )
-
-        registry.register(
-            "create_experiment",
-            "Start an economic experiment.",
-            create_experiment,
-            requires_approval=True,
-            live_capable=True,
-            simulation_safe=True,
-        )
-
-        registry.register(
-            "complete_experiment",
-            "Complete an economic experiment.",
-            complete_experiment,
-            requires_approval=True,
-            live_capable=True,
-            simulation_safe=True,
-        )
-
-        registry.register(
-            "economy_report",
-            "Generate a complete economy report.",
-            economy_report,
-        )
-
-    # ------------------------------------------------------------------
-    # PUBLIC RESEARCH TOOLS
-    # ------------------------------------------------------------------
-
-    if research:
-
-        def web_search(
-            query: str,
-            max_results: int = 5,
-        ):
-            return research.search(
-                query,
-                max_results,
-            )
-
-        def read_webpage(
-            url: str,
-        ):
-            return research.read_page(
-                url
-            )
-
-        # Public research does not require Creator approval.
-        # It is read-only and does not itself create a consequential
-        # external-world action.
-
-        registry.register(
-            "web_search",
-            "Search the public web for information.",
-            web_search,
-            requires_approval=False,
-            live_capable=False,
-            simulation_safe=True,
-        )
-
-        registry.register(
-            "read_webpage",
-            "Read a public webpage.",
-            read_webpage,
-            requires_approval=False,
-            live_capable=False,
-            simulation_safe=True,
-        )
-
-    return registry
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=False,
+    )
