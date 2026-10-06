@@ -1,280 +1,230 @@
 """
 InfoFarmer Agent
 ----------------
+Research and information-gathering specialist.
 
-Responsible for researching, collecting and storing useful
-information for the rest of the agent system.
-
-The InfoFarmer can operate autonomously in simulation mode
-and can use public research tools when they are registered.
+The InfoFarmer can autonomously perform read-only research through the
+registered research tools. It does not perform consequential external
+actions.
 """
 
+from typing import Any, Dict
+
 from .base_agent import BaseAgent
-from core.memory import SharedMemory
-from core.tools import ToolRegistry
 
 
-class InfoFarmerAgent(BaseAgent):
-
-    def __init__(
-        self,
-        memory: SharedMemory,
-        tools: ToolRegistry,
-    ):
+class InfoFarmer(BaseAgent):
+    def __init__(self, memory, tools):
         super().__init__(
             name="InfoFarmer",
-            role="Information Specialist",
+            role="Research and Intelligence",
             memory=memory,
             tools=tools,
             description=(
-                "Researches useful information, "
-                "stores knowledge and supplies "
-                "other agents with relevant findings."
+                "Researches public information, gathers useful knowledge, "
+                "summarises findings, and feeds intelligence back into "
+                "shared memory."
             ),
         )
 
-        self.update_status("ready")
+    def process_order(self, order: str) -> Dict[str, Any]:
+        command = (order or "").strip()
 
-    # ------------------------------------------------------------------
-    # Orders
-    # ------------------------------------------------------------------
+        if not command:
+            return {
+                "status": "error",
+                "agent": self.name,
+                "message": "No research order supplied.",
+            }
 
-    def process_order(
-        self,
-        order: str,
-    ) -> str:
+        lowered = command.lower()
 
-        self.memory.log(
-            "InfoFarmer",
-            f"Received order: {order}",
-        )
+        if lowered in {"help", "?", "commands"}:
+            return self.get_help()
 
-        order_text = order.strip()
-
-        if not order_text:
-            return (
-                "InfoFarmer needs a research topic."
-            )
-
-        order_lower = order_text.lower()
-
-        # --------------------------------------------------------------
-        # Direct web research
-        # --------------------------------------------------------------
-
-        if (
-            "web search" in order_lower
-            or "search web" in order_lower
-            or "search the web" in order_lower
-        ):
-            query = self._extract_topic(
-                order_text,
-                [
-                    "web search",
-                    "search web",
-                    "search the web",
-                ],
-            )
+        if lowered.startswith("search "):
+            query = command[7:].strip()
 
             if not query:
-                return (
-                    "Please provide a search topic."
-                )
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": "Search query is required.",
+                }
+
+            return self.execute_tool(
+                "web_search",
+                query=query,
+            )
+
+        if lowered.startswith("research "):
+            query = command[9:].strip()
+
+            if not query:
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": "Research topic is required.",
+                }
 
             result = self.execute_tool(
                 "web_search",
                 query=query,
             )
 
-            return self._format_research_result(
-                result
-            )
+            self.observe_result(result)
 
-        # --------------------------------------------------------------
-        # Read webpage
-        # --------------------------------------------------------------
+            return {
+                "status": "success",
+                "agent": self.name,
+                "operation": "research",
+                "query": query,
+                "result": result,
+            }
 
-        if (
-            order_lower.startswith("read ")
-            and (
-                "http://" in order_lower
-                or "https://" in order_lower
-            )
-        ):
-            url = order_text[5:].strip()
+        if lowered.startswith("read "):
+            url = command[5:].strip()
 
-            result = self.execute_tool(
+            if not url:
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": "URL is required.",
+                }
+
+            return self.execute_tool(
                 "read_webpage",
                 url=url,
             )
 
-            return self._format_research_result(
-                result
+        if lowered.startswith("open "):
+            url = command[5:].strip()
+
+            if not url:
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": "URL is required.",
+                }
+
+            return self.execute_tool(
+                "read_webpage",
+                url=url,
             )
 
-        # --------------------------------------------------------------
-        # Basic farming
-        # --------------------------------------------------------------
+        if lowered.startswith("farm "):
+            topic = command[5:].strip()
 
-        topic = self._extract_topic(
-            order_text,
-            [
-                "farm",
-                "research",
-                "find",
-                "gather",
-                "info",
-                "information",
-                "about",
-                "on",
-                "search",
-            ],
+            if not topic:
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": "Information topic is required.",
+                }
+
+            return self.execute_tool(
+                "farm_info",
+                topic=topic,
+            )
+
+        if lowered.startswith("find information about "):
+            topic = command[len("find information about "):].strip()
+
+            if not topic:
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": "Information topic is required.",
+                }
+
+            return self.execute_tool(
+                "farm_info",
+                topic=topic,
+            )
+
+        if lowered.startswith("find info about "):
+            topic = command[len("find info about "):].strip()
+
+            if not topic:
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": "Information topic is required.",
+                }
+
+            return self.execute_tool(
+                "farm_info",
+                topic=topic,
+            )
+
+        if lowered in {"status", "agent status"}:
+            return self.get_status_report()
+
+        if lowered in {"run", "cycle", "run cycle"}:
+            return self.run_cycle()
+
+        return {
+            "status": "error",
+            "agent": self.name,
+            "message": f"Unknown InfoFarmer command: {command}",
+            "help": self.get_help(),
+        }
+
+    def research(self, query: str) -> Dict[str, Any]:
+        result = self.execute_tool(
+            "web_search",
+            query=query,
         )
 
-        if not topic:
-            topic = (
-                "general market opportunities"
-            )
+        self.observe_result(result)
 
+        return result
+
+    def read_url(self, url: str) -> Dict[str, Any]:
+        result = self.execute_tool(
+            "read_webpage",
+            url=url,
+        )
+
+        self.observe_result(result)
+
+        return result
+
+    def farm_information(self, topic: str) -> Dict[str, Any]:
         result = self.execute_tool(
             "farm_info",
             topic=topic,
         )
 
-        if not result.get("success"):
-            return (
-                "InfoFarmer failed: "
-                + str(
-                    result.get(
-                        "error",
-                        "Unknown error.",
-                    )
-                )
-            )
+        self.observe_result(result)
 
-        entry = result.get(
-            "result",
-            {},
-        )
+        return result
 
-        if not isinstance(entry, dict):
-            return (
-                "InfoFarmer completed the task "
-                "but received an unexpected result."
-            )
-
-        entry_id = entry.get(
-            "id",
-            "?",
-        )
-
-        content = entry.get(
-            "content",
-            "No content recorded.",
-        )
-
-        return (
-            "InfoFarmer completed task.\n"
-            f"Farmed knowledge #{entry_id}:\n"
-            f"{content}"
-        )
-
-    # ------------------------------------------------------------------
-    # Topic extraction
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_topic(
-        text: str,
-        prefixes,
-    ) -> str:
-
-        topic = text.strip()
-
-        lowered = topic.lower()
-
-        # Remove the longest phrases first so that
-        # "search the web" is not partially reduced
-        # by "search".
-        ordered = sorted(
-            prefixes,
-            key=len,
-            reverse=True,
-        )
-
-        for prefix in ordered:
-            prefix_lower = prefix.lower()
-
-            if lowered.startswith(
-                prefix_lower
-            ):
-                topic = topic[
-                    len(prefix):
-                ].strip()
-
-                lowered = topic.lower()
-
-        # Remove common leading connector words.
-        while True:
-            changed = False
-
-            for word in (
-                "for",
-                "about",
-                "on",
-                "into",
-                "regarding",
-            ):
-                prefix = word + " "
-
-                if topic.lower().startswith(
-                    prefix
-                ):
-                    topic = topic[
-                        len(prefix):
-                    ].strip()
-
-                    changed = True
-                    break
-
-            if not changed:
-                break
-
-        return topic.strip(
-            " :,-"
-        )
-
-    # ------------------------------------------------------------------
-    # Research result formatting
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _format_research_result(
-        result,
-    ) -> str:
-
-        if not result.get("success"):
-            return (
-                "Research failed: "
-                + str(
-                    result.get(
-                        "error",
-                        "Unknown error.",
-                    )
-                )
-            )
-
-        payload = result.get(
-            "result"
-        )
-
-        if payload is None:
-            return (
-                "Research completed, "
-                "but returned no data."
-            )
-
-        return (
-            "Research completed.\n\n"
-            + str(payload)
-        )
+    def get_help(self) -> Dict[str, Any]:
+        return {
+            "status": "success",
+            "agent": self.name,
+            "role": self.role,
+            "commands": [
+                "search <query>",
+                "research <topic>",
+                "read <url>",
+                "open <url>",
+                "farm <topic>",
+                "find information about <topic>",
+                "status",
+                "run",
+                "help",
+            ],
+            "capabilities": [
+                "Public web research",
+                "Webpage reading",
+                "Information farming",
+                "Knowledge gathering",
+                "Shared-memory intelligence",
+            ],
+            "safety": (
+                "InfoFarmer performs read-only research and cannot "
+                "independently perform consequential external actions."
+            ),
+        }
