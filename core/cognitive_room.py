@@ -1,19 +1,10 @@
 """
 Cognitive Room
 --------------
+
 Private working environment for an autonomous agent.
 
-The CognitiveRoom separates an agent's private cognitive state
-from the shared world/blackboard used by the rest of the simulation.
-
-It stores:
-- identity
-- objectives
-- memories
-- thoughts
-- observations
-- messages
-- plans
+Separates private cognitive state from shared system memory.
 """
 
 from datetime import datetime
@@ -33,23 +24,41 @@ class CognitiveRoom:
         self.description = description
 
         self.identity = identity or (
-            f"You are {agent_name}, a {role}."
+            f"You are {agent_name}, "
+            f"a {role}."
         )
 
         self.objective: Optional[str] = None
         self.status = "idle"
 
-        self.memory: List[Dict[str, Any]] = []
-        self.thoughts: List[Dict[str, Any]] = []
-        self.messages: List[Dict[str, Any]] = []
-        self.observations: List[Dict[str, Any]] = []
-        self.plan: List[Dict[str, Any]] = []
+        self.memory: List[
+            Dict[str, Any]
+        ] = []
 
-    # ------------------------------------------------------------------
-    # OBJECTIVES
-    # ------------------------------------------------------------------
+        self.thoughts: List[
+            Dict[str, Any]
+        ] = []
 
-    def set_objective(self, objective: str) -> None:
+        self.messages: List[
+            Dict[str, Any]
+        ] = []
+
+        self.observations: List[
+            Dict[str, Any]
+        ] = []
+
+        self.plan: List[
+            Dict[str, Any]
+        ] = []
+
+    # ---------------------------------------------------------
+    # OBJECTIVE
+    # ---------------------------------------------------------
+
+    def set_objective(
+        self,
+        objective: str,
+    ) -> None:
         self.objective = objective
         self.status = "working"
 
@@ -63,15 +72,16 @@ class CognitiveRoom:
         self.status = "idle"
         self.plan = []
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
     # MEMORY
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
 
     def remember(
         self,
         content: str,
         category: str = "general",
     ) -> Dict[str, Any]:
+
         item = {
             "timestamp": self._timestamp(),
             "category": category,
@@ -80,42 +90,48 @@ class CognitiveRoom:
 
         self.memory.append(item)
 
-        # Keep the private room bounded.
-        self.memory = self.memory[-200:]
+        self.memory = self.memory[
+            -200:
+        ]
 
         return item
 
-    # ------------------------------------------------------------------
-    # PERCEPTION
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # OBSERVATIONS
+    # ---------------------------------------------------------
 
     def observe(
         self,
         content: str,
         source: str = "world",
     ) -> Dict[str, Any]:
+
         item = {
             "timestamp": self._timestamp(),
             "source": source,
             "content": content,
         }
 
-        self.observations.append(item)
+        self.observations.append(
+            item
+        )
 
-        # Keep recent observations.
-        self.observations = self.observations[-100:]
+        self.observations = (
+            self.observations[-100:]
+        )
 
         return item
 
-    # ------------------------------------------------------------------
-    # THINKING
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # THOUGHTS
+    # ---------------------------------------------------------
 
     def think(
         self,
         content: str,
         kind: str = "reasoning",
     ) -> Dict[str, Any]:
+
         item = {
             "timestamp": self._timestamp(),
             "kind": kind,
@@ -124,20 +140,22 @@ class CognitiveRoom:
 
         self.thoughts.append(item)
 
-        # Keep the private thought history bounded.
-        self.thoughts = self.thoughts[-100:]
+        self.thoughts = (
+            self.thoughts[-100:]
+        )
 
         return item
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
     # MESSAGES
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
 
     def receive_message(
         self,
         sender: str,
         content: str,
     ) -> Dict[str, Any]:
+
         item = {
             "timestamp": self._timestamp(),
             "sender": sender,
@@ -146,36 +164,59 @@ class CognitiveRoom:
         }
 
         self.messages.append(item)
-        self.messages = self.messages[-100:]
+
+        self.messages = (
+            self.messages[-100:]
+        )
 
         return item
 
-    def unread_messages(self) -> List[Dict[str, Any]]:
+    def unread_messages(
+        self,
+    ) -> List[Dict[str, Any]]:
+
         return [
             message
             for message in self.messages
-            if not message.get("read", False)
+            if not message.get(
+                "read",
+                False,
+            )
         ]
 
-    def mark_messages_read(self) -> None:
+    def mark_messages_read(
+        self,
+    ) -> None:
+
         for message in self.messages:
             message["read"] = True
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
     # PLANNING
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
 
-    def set_plan(self, steps: List[str]) -> None:
+    def set_plan(
+        self,
+        steps: List[str],
+    ) -> None:
+
         self.plan = [
             {
                 "step": index,
                 "description": step,
                 "status": "pending",
             }
-            for index, step in enumerate(steps, start=1)
+            for index, step in enumerate(
+                steps,
+                start=1,
+            )
         ]
 
-    def complete_plan_step(self, step: int) -> bool:
+    def complete_plan_step(
+        self,
+        step: int,
+    ) -> bool:
+
         for item in self.plan:
             if item["step"] == step:
                 item["status"] = "completed"
@@ -188,8 +229,10 @@ class CognitiveRoom:
         step: int,
         reason: str = "",
     ) -> bool:
+
         for item in self.plan:
             if item["step"] == step:
+
                 item["status"] = "failed"
 
                 if reason:
@@ -199,11 +242,14 @@ class CognitiveRoom:
 
         return False
 
-    # ------------------------------------------------------------------
-    # STATE
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # SNAPSHOT
+    # ---------------------------------------------------------
 
-    def snapshot(self) -> Dict[str, Any]:
+    def snapshot(
+        self,
+    ) -> Dict[str, Any]:
+
         return {
             "agent_name": self.agent_name,
             "role": self.role,
@@ -214,13 +260,15 @@ class CognitiveRoom:
             "memory": self.memory[-50:],
             "thoughts": self.thoughts[-50:],
             "messages": self.messages[-50:],
-            "observations": self.observations[-50:],
+            "observations": (
+                self.observations[-50:]
+            ),
             "plan": self.plan,
         }
 
-    # ------------------------------------------------------------------
-    # INTERNAL
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # TIME
+    # ---------------------------------------------------------
 
     @staticmethod
     def _timestamp() -> str:
