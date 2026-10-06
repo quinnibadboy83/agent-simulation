@@ -1,21 +1,34 @@
 """
 Agent Simulation API
 --------------------
-FastAPI application for the autonomous multi-agent system.
+FastAPI entry point for the autonomous multi-agent system.
 
-Creator-controlled safety model:
-- Simulation mode is the default.
-- Research and analysis may run autonomously.
-- Consequential external actions require exact Creator approval.
-- Approved actions are single-use.
+Architecture:
+
+Creator
+   ↓
+Action Gate
+   ↓
+Orchestrator
+   ↓
+Agents
+   ↓
+Cognitive Rooms / Shared Memory
+   ↓
+Tools / Research / Economy
+   ↓
+Results
+
+Consequential external actions remain approval-gated.
 """
 
-import os
-from typing import Any, Dict
+from datetime import datetime
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from fastapi import Request
 from pydantic import BaseModel
 
 from agents import (
@@ -24,6 +37,7 @@ from agents import (
     InfoFarmer,
     OpportunityAgent,
 )
+
 from core import (
     Economy,
     Orchestrator,
@@ -34,18 +48,24 @@ from core import (
 )
 
 
+# ---------------------------------------------------------------------
+# Application
+# ---------------------------------------------------------------------
+
 app = FastAPI(
-    title="Agent Simulation",
-    version="2.0.0",
+    title="Autonomous Agent Simulation",
     description=(
-        "Autonomous multi-agent simulation with "
-        "Creator-controlled consequential actions."
+        "Multi-agent cognitive simulation with shared memory, "
+        "research, economy, orchestration, and Creator approval."
     ),
+    version="1.0.0",
 )
+
+templates = Jinja2Templates(directory="ui/templates")
 
 
 # ---------------------------------------------------------------------
-# Core services
+# Core systems
 # ---------------------------------------------------------------------
 
 memory = SharedMemory()
@@ -55,6 +75,7 @@ research = WebResearch(memory)
 
 tools = create_default_tools(
     memory=memory,
+    world=world,
     economy=economy,
     research=research,
 )
@@ -87,10 +108,10 @@ opportunity_agent = OpportunityAgent(
 
 
 agents = {
-    boss.name: boss,
-    banker.name: banker,
-    info_farmer.name: info_farmer,
-    opportunity_agent.name: opportunity_agent,
+    "Boss": boss,
+    "Banker": banker,
+    "InfoFarmer": info_farmer,
+    "OpportunityAgent": opportunity_agent,
 }
 
 
@@ -113,6 +134,7 @@ orchestrator = Orchestrator(
 
 class CommandRequest(BaseModel):
     command: str
+    agent: str = ""
 
 
 class ModeRequest(BaseModel):
@@ -130,129 +152,44 @@ class TaskRequest(BaseModel):
 
 
 class NoteRequest(BaseModel):
-    note: str
-
-
-# ---------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------
-
-def get_safety_state() -> Dict[str, Any]:
-    try:
-        policy = economy.get_mode_policy()
-    except Exception:
-        policy = {
-            "mode": "simulation",
-            "live_tools_enabled": False,
-            "creator_approval_required": True,
-        }
-
-    return {
-        "mode": policy.get(
-            "mode",
-            "simulation",
-        ),
-        "live_tools_enabled": policy.get(
-            "live_tools_enabled",
-            False,
-        ),
-        "creator_approval_required": True,
-        "exact_approval_required": True,
-        "single_use_approvals": True,
-    }
-
-
-def approval_response(item: Dict[str, Any]) -> Dict[str, Any]:
-    payload = item.get(
-        "payload",
-        item.get("parameters", {}),
-    )
-
-    return {
-        **item,
-        "action": item.get(
-            "action",
-            item.get("tool", ""),
-        ),
-        "description": item.get(
-            "description",
-            item.get("reason", ""),
-        ),
-        "parameters": payload,
-    }
-
-
-def serialise_result(result: Any) -> Any:
-    if isinstance(result, dict):
-        return result
-
-    if isinstance(result, list):
-        return result
-
-    return {
-        "status": "success",
-        "result": result,
-    }
+    topic: str
+    content: str
 
 
 # ---------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------
 
-@app.get(
-    "/",
-    response_class=HTMLResponse,
-)
-async def dashboard():
-    html_path = os.path.join(
-        "ui",
-        "templates",
+@app.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request):
+    return templates.TemplateResponse(
         "index.html",
+        {
+            "request": request,
+        },
     )
-
-    if not os.path.exists(html_path):
-        return HTMLResponse(
-            """
-            <html>
-                <body>
-                    <h1>Agent Simulation</h1>
-                    <p>Dashboard template not found.</p>
-                </body>
-            </html>
-            """
-        )
-
-    with open(
-        html_path,
-        "r",
-        encoding="utf-8",
-    ) as file:
-        return HTMLResponse(
-            file.read()
-        )
 
 
 # ---------------------------------------------------------------------
-# Command interface
+# Command API
 # ---------------------------------------------------------------------
 
 @app.post("/command")
-async def command_endpoint(
-    request: CommandRequest,
-):
+async def command_endpoint(request: CommandRequest):
     command = request.command.strip()
 
     if not command:
         raise HTTPException(
             status_code=400,
-            detail="Command is required.",
+            detail="Command cannot be empty.",
         )
 
     result = orchestrator.route_command(
-        command
+        command=command,
+        agent_name=request.agent.strip(),
     )
 
-    return serialise_result(result)
+    return result
 
 
 # ---------------------------------------------------------------------
@@ -261,138 +198,72 @@ async def command_endpoint(
 
 @app.get("/api/status")
 async def api_status():
-    try:
-        logs = memory.get_logs(
-            limit=50
-        )
-    except Exception:
-        logs = []
-
-    try:
-        balance = memory.get_balance()
-    except Exception:
-        balance = 0.0
-
-    try:
-        world_summary = world.get_summary()
-    except Exception:
-        world_summary = {}
-
-    try:
-        economy_report = (
-            economy.get_economy_report()
-        )
-    except Exception:
-        economy_report = {}
-
-    try:
-        pending = tools.approval_gate.list_pending()
-    except Exception:
-        pending = []
-
     return {
         "status": "online",
-        "system": {
-            "name": "Agent Simulation",
-            "version": "2.0.0",
-        },
-        "safety": get_safety_state(),
-        "world": world_summary,
-        "economy": economy_report,
-        "balance": balance,
-        "agents": orchestrator.get_agents(),
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "mode": economy.get_mode(),
         "orchestrator": orchestrator.status(),
+        "world": world.get_summary(),
+        "economy": economy.get_economy_report(),
+        "agents": {
+            name: agent.get_status_report()
+            for name, agent in agents.items()
+        },
         "pending_approvals": len(
-            pending
+            tools.approval_gate.list_pending()
         ),
-        "logs": logs,
     }
 
 
 # ---------------------------------------------------------------------
-# Agent endpoints
+# Agents
 # ---------------------------------------------------------------------
 
 @app.get("/api/agents")
 async def api_agents():
-    result = {}
-
-    for name, agent in agents.items():
-        try:
-            result[name] = (
-                agent.get_status_report()
-            )
-        except Exception as exc:
-            result[name] = {
-                "status": "error",
-                "agent": name,
-                "message": str(exc),
-            }
-
     return {
-        "status": "success",
-        "agents": result,
+        name: agent.get_status_report()
+        for name, agent in agents.items()
     }
 
 
 @app.get("/api/agents/{name}")
 async def api_agent(name: str):
-    agent = agents.get(name)
-
-    if agent is None:
+    if name not in agents:
         raise HTTPException(
             status_code=404,
             detail=f"Unknown agent: {name}",
         )
 
-    return agent.get_status_report()
+    return agents[name].get_status_report()
 
 
 @app.get("/api/agents/{name}/cognitive")
 async def api_agent_cognitive(name: str):
-    agent = agents.get(name)
-
-    if agent is None:
+    if name not in agents:
         raise HTTPException(
             status_code=404,
             detail=f"Unknown agent: {name}",
         )
 
-    try:
-        return {
-            "status": "success",
-            "agent": name,
-            "cognitive": agent.get_cognitive_state(),
-        }
-    except Exception as exc:
-        return {
-            "status": "error",
-            "agent": name,
-            "message": str(exc),
-        }
+    return agents[name].get_cognitive_state()
 
 
 # ---------------------------------------------------------------------
-# Tool endpoints
+# Tools
 # ---------------------------------------------------------------------
 
 @app.get("/api/tools")
 async def api_tools():
-    try:
-        return {
-            "status": "success",
-            "tools": tools.list_tools(),
-            "capabilities": tools.capabilities(),
-        }
-    except Exception as exc:
-        return {
-            "status": "error",
-            "message": str(exc),
-        }
+    return {
+        "tools": tools.list_tools(),
+        "capabilities": tools.capabilities(),
+        "mode": tools.get_mode(),
+    }
 
 
 # ---------------------------------------------------------------------
-# Orchestrator endpoints
+# Orchestrator API
 # ---------------------------------------------------------------------
 
 @app.get("/api/orchestrator")
@@ -412,22 +283,19 @@ async def api_orchestrator_stop():
 
 @app.post("/api/orchestrator/cycle")
 async def api_orchestrator_cycle(
-    request: CommandRequest | None = None,
+    request: Optional[CommandRequest] = None,
 ):
-    command = ""
-
-    if request is not None:
-        command = request.command.strip()
+    if request is None:
+        return orchestrator.run_cycle()
 
     return orchestrator.run_cycle(
-        command=command
+        command=request.command,
+        agent_name=request.agent,
     )
 
 
 @app.post("/api/orchestrator/task")
-async def api_orchestrator_task(
-    request: TaskRequest,
-):
+async def api_orchestrator_task(request: TaskRequest):
     return orchestrator.assign_task(
         agent_name=request.agent,
         task=request.task,
@@ -435,160 +303,115 @@ async def api_orchestrator_task(
     )
 
 
+@app.post("/api/orchestrator/broadcast")
+async def api_orchestrator_broadcast(
+    request: CommandRequest,
+):
+    return orchestrator.broadcast(
+        request.command,
+    )
+
+
 # ---------------------------------------------------------------------
-# Mode control
+# Operating mode
 # ---------------------------------------------------------------------
 
 @app.get("/api/mode")
 async def api_mode():
-    return get_safety_state()
+    return {
+        "mode": economy.get_mode(),
+        "policy": economy.get_mode_policy(),
+        "live_tools_enabled": economy.can_use_live_tools(),
+        "creator_approval_required": (
+            economy.requires_creator_approval()
+        ),
+    }
 
 
 @app.post("/api/mode")
-async def api_set_mode(
-    request: ModeRequest,
-):
-    requested = (
-        request.mode or ""
-    ).strip().lower()
+async def api_set_mode(request: ModeRequest):
+    requested_mode = request.mode.strip().lower()
 
-    if requested == "live":
-        requested = "real"
+    if requested_mode in {"real", "live"}:
+        return {
+            "status": "blocked",
+            "mode": economy.get_mode(),
+            "message": (
+                "Real/live mode cannot be enabled through this "
+                "endpoint. Creator authentication and explicit "
+                "authorization are required."
+            ),
+            "creator_approval_required": True,
+        }
 
-    if requested not in {
-        "simulation",
-        "real",
-    }:
+    if requested_mode != "simulation":
         raise HTTPException(
             status_code=400,
             detail=(
-                "Mode must be 'simulation' "
-                "or 'real'."
+                "Invalid mode. Use 'simulation'. "
+                "Real/live mode requires Creator authorization."
             ),
         )
 
-    if requested == "real":
-        return {
-            "status": "blocked",
-            "message": (
-                "Real mode cannot be enabled "
-                "by an autonomous agent or "
-                "ordinary dashboard request. "
-                "Creator authentication and "
-                "explicit authorization are "
-                "required before live operation."
-            ),
-            "current_mode": economy.get_mode(),
-            "safety": get_safety_state(),
-        }
-
-    try:
-        economy.set_mode(
-            "simulation"
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=str(exc),
-        )
-
-    memory.log(
-        "Creator",
-        "Operating mode set to simulation.",
-    )
+    economy.set_mode("simulation")
 
     return {
         "status": "success",
-        "message": (
-            "Simulation mode enabled."
-        ),
-        "safety": get_safety_state(),
+        "mode": economy.get_mode(),
+        "message": "Simulation mode enabled.",
     }
 
 
 # ---------------------------------------------------------------------
-# Approval endpoints
+# Approval API
 # ---------------------------------------------------------------------
 
 @app.get("/api/approvals")
 async def api_approvals():
-    try:
-        approvals = (
-            tools.approval_gate.list_all()
-        )
-    except Exception:
-        approvals = (
-            memory.get_approvals()
-        )
-
     return {
-        "status": "success",
-        "approvals": [
-            approval_response(item)
-            for item in approvals
-        ],
+        "pending": tools.approval_gate.list_pending(),
+        "all": tools.approval_gate.list_all(),
     }
 
 
-@app.post(
-    "/api/approvals/{approval_id}/approve"
-)
+@app.post("/api/approvals/{approval_id}/approve")
 async def approve_action(
     approval_id: str,
+    request: ApprovalRequest,
 ):
     result = tools.approval_gate.decide(
         approval_id=approval_id,
         decision="approved",
+        reason=request.reason,
     )
 
-    if not result:
+    if result.get("status") == "error":
         raise HTTPException(
-            status_code=404,
-            detail=(
-                f"Approval not found: "
-                f"{approval_id}"
-            ),
+            status_code=400,
+            detail=result,
         )
 
-    return {
-        "status": "success",
-        "approval": approval_response(
-            result
-        ),
-        "message": (
-            "Exact action approved. "
-            "Approval is single-use."
-        ),
-    }
+    return result
 
 
-@app.post(
-    "/api/approvals/{approval_id}/deny"
-)
+@app.post("/api/approvals/{approval_id}/deny")
 async def deny_action(
     approval_id: str,
+    request: ApprovalRequest,
 ):
     result = tools.approval_gate.decide(
         approval_id=approval_id,
         decision="denied",
+        reason=request.reason,
     )
 
-    if not result:
+    if result.get("status") == "error":
         raise HTTPException(
-            status_code=404,
-            detail=(
-                f"Approval not found: "
-                f"{approval_id}"
-            ),
+            status_code=400,
+            detail=result,
         )
 
-    return {
-        "status": "success",
-        "approval": approval_response(
-            result
-        ),
-        "message": "Action denied.",
-    }
+    return result
 
 
 # ---------------------------------------------------------------------
@@ -597,10 +420,7 @@ async def deny_action(
 
 @app.get("/api/world")
 async def api_world():
-    return {
-        "status": "success",
-        "world": world.get_summary(),
-    }
+    return world.get_summary()
 
 
 @app.post("/api/advance_time")
@@ -614,69 +434,48 @@ async def api_advance_time():
 
 @app.get("/api/economy")
 async def api_economy():
+    return economy.get_economy_report()
+
+
+@app.get("/api/economy/vault")
+async def api_vault():
     return {
-        "status": "success",
-        "economy": (
-            economy.get_economy_report()
-        ),
-    }
-
-
-@app.get("/vault")
-async def vault():
-    try:
-        balance = memory.get_balance()
-    except Exception:
-        balance = 0.0
-
-    try:
-        transactions = (
-            memory.get_transactions()
-        )
-    except Exception:
-        transactions = []
-
-    return {
-        "status": "success",
-        "balance": balance,
-        "transactions": transactions,
+        "balance": memory.get_balance(),
         "mode": economy.get_mode(),
     }
 
 
 # ---------------------------------------------------------------------
-# InfoFarmer compatibility endpoint
+# InfoFarmer
 # ---------------------------------------------------------------------
 
 @app.post("/agent/InfoFarmer/note")
-async def info_farmer_note(
-    request: NoteRequest,
-):
-    note = request.note.strip()
-
-    if not note:
+async def info_farmer_note(request: NoteRequest):
+    if not request.topic.strip():
         raise HTTPException(
             status_code=400,
-            detail="Note is required.",
+            detail="Topic is required.",
         )
 
-    memory.add_knowledge(
-        key=f"manual_note:{datetime_now()}",
-        value={
-            "source": "Creator",
-            "note": note,
-        },
-    )
+    if not request.content.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Content is required.",
+        )
 
-    memory.log(
-        "InfoFarmer",
-        f"Creator note stored: {note}",
+    result = memory.add_knowledge(
+        key=request.topic.strip(),
+        value={
+            "content": request.content.strip(),
+            "source": "Creator",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        },
     )
 
     return {
         "status": "success",
-        "message": "Note stored.",
-        "note": note,
+        "topic": request.topic.strip(),
+        "result": result,
     }
 
 
@@ -687,12 +486,11 @@ async def info_farmer_note(
 @app.get("/health")
 async def health():
     return {
-        "status": "ok",
+        "status": "healthy",
+        "service": "agent-simulation",
         "mode": economy.get_mode(),
         "agents": len(agents),
-        "orchestrator_running": (
-            orchestrator.running
-        ),
+        "timestamp": datetime.utcnow().isoformat() + "Z",
     }
 
 
@@ -702,47 +500,27 @@ async def health():
 
 @app.on_event("startup")
 async def startup_event():
-    memory.log(
-        "System",
-        "Agent Simulation started.",
-    )
-
-    memory.log(
-        "System",
-        (
-            "Creator approval gate active "
-            "for consequential actions."
-        ),
-    )
-
-    memory.log(
-        "System",
-        (
-            f"Registered agents: "
-            f"{', '.join(orchestrator.get_agents())}"
-        ),
-    )
-
-
-def datetime_now() -> str:
-    from datetime import datetime
-
-    return datetime.utcnow().isoformat()
+    print("=" * 60)
+    print("AUTONOMOUS AGENT SIMULATION")
+    print("=" * 60)
+    print(f"Mode: {economy.get_mode()}")
+    print(f"Agents: {', '.join(agents.keys())}")
+    print("Orchestrator: READY")
+    print("Creator Approval Gate: READY")
+    print("Research System: READY")
+    print("Economy System: READY")
+    print("=" * 60)
 
 
 # ---------------------------------------------------------------------
-# Server
+# Local execution
 # ---------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import os
     import uvicorn
 
-    port = int(
-        os.environ.get(
-            "PORT",
-            "8000",
-        )
-    )
+    port = int(os.environ.get("PORT", "8000"))
 
     uvicorn.run(
         "main:app",
