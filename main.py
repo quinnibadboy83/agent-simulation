@@ -3,14 +3,15 @@ Agent Simulation
 ----------------
 Main FastAPI application.
 
-Creates the shared simulation services, registers all agents with the
-orchestrator, exposes the command API, agent API, approval API,
-economy/world API, and dashboard.
+Creator commands enter through Boss.
+Boss can delegate work to the other registered agents.
 """
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
+import json
 import os
+import traceback
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -30,24 +31,27 @@ from agents.info_farmer import InfoFarmer
 from agents.opportunity_agent import OpportunityAgent
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # APPLICATION
-# ---------------------------------------------------------------------------
+# ============================================================
 
 app = FastAPI(
     title="Agent Simulation",
-    version="2.0",
+    version="2.0.0",
 )
+
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "ui" / "templates"
 
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = Jinja2Templates(
+    directory=str(TEMPLATES_DIR)
+)
 
 
-# ---------------------------------------------------------------------------
-# CORE SERVICES
-# ---------------------------------------------------------------------------
+# ============================================================
+# CORE SYSTEMS
+# ============================================================
 
 memory = SharedMemory()
 
@@ -67,9 +71,9 @@ tools = create_default_tools(
 approvals = ApprovalGate(memory)
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # AGENTS
-# ---------------------------------------------------------------------------
+# ============================================================
 
 boss = Boss(
     memory=memory,
@@ -101,9 +105,9 @@ agents = {
 }
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # ORCHESTRATOR
-# ---------------------------------------------------------------------------
+# ============================================================
 
 orchestrator = Orchestrator(
     memory=memory,
@@ -114,14 +118,13 @@ orchestrator = Orchestrator(
 )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # HELPERS
-# ---------------------------------------------------------------------------
+# ============================================================
 
 def serialise(value: Any) -> Any:
     """
-    Convert arbitrary agent/tool output into something FastAPI can return
-    safely as JSON.
+    Convert objects returned by agents/tools into JSON-safe data.
     """
 
     if value is None:
@@ -137,35 +140,41 @@ def serialise(value: Any) -> Any:
         }
 
     if isinstance(value, (list, tuple, set)):
-        return [serialise(item) for item in value]
+        return [
+            serialise(item)
+            for item in value
+        ]
 
     if hasattr(value, "model_dump"):
         try:
-            return serialise(value.model_dump())
+            return serialise(
+                value.model_dump()
+            )
         except Exception:
             pass
 
     if hasattr(value, "dict"):
         try:
-            return serialise(value.dict())
+            return serialise(
+                value.dict()
+            )
         except Exception:
             pass
 
     if hasattr(value, "__dict__"):
         try:
-            return serialise(vars(value))
+            return serialise(
+                vars(value)
+            )
         except Exception:
             pass
 
     return str(value)
 
 
-def command_text(value: Any) -> str:
+def readable_response(value: Any) -> str:
     """
-    Convert an agent response into a human-readable command response.
-
-    This prevents the frontend from displaying:
-        [object Object]
+    Convert an agent response into text that the dashboard can display.
     """
 
     value = serialise(value)
@@ -175,7 +184,6 @@ def command_text(value: Any) -> str:
 
     if isinstance(value, dict):
 
-        # Prefer normal response/message fields.
         for key in (
             "response",
             "message",
@@ -188,33 +196,17 @@ def command_text(value: Any) -> str:
             if isinstance(item, str):
                 return item
 
-        # Tool result wrapper.
         if "result" in value:
+
             result = value["result"]
 
             if isinstance(result, str):
                 return result
 
-            if isinstance(result, dict):
-                return command_text(result)
+            return readable_response(result)
 
-            return str(result)
-
-        # Error wrapper.
         if "error" in value:
             return f"ERROR: {value['error']}"
-
-        # Status wrapper.
-        if value.get("status") and len(value) <= 5:
-            parts = []
-
-            for key, item in value.items():
-                parts.append(f"{key}: {item}")
-
-            return "\n".join(parts)
-
-        # Last resort: readable JSON-like output.
-        import json
 
         try:
             return json.dumps(
@@ -229,69 +221,115 @@ def command_text(value: Any) -> str:
     return str(value)
 
 
-def safe_agent_status() -> Dict[str, Any]:
-    result = {}
-
-    for name, agent in agents.items():
-        try:
-            result[name] = serialise(agent.get_status_report())
-        except Exception as exc:
-            result[name] = {
-                "status": "error",
-                "error": str(exc),
-            }
-
-    return result
-
-
 def current_mode() -> str:
+
     try:
         return economy.get_mode()
+
     except Exception:
+
         try:
-            return world.get_state("economy_mode")
+            state = world.state
+
+            return state.get(
+                "economy_mode",
+                "simulation",
+            )
+
         except Exception:
             return "simulation"
 
 
-# ---------------------------------------------------------------------------
+def get_agent_status(agent: Any) -> Dict[str, Any]:
+
+    try:
+        return serialise(
+            agent.get_status_report()
+        )
+
+    except Exception as exc:
+
+        return {
+            "name": getattr(
+                agent,
+                "name",
+                "Unknown",
+            ),
+            "status": "error",
+            "error": str(exc),
+        }
+
+
+def all_agent_status() -> Dict[str, Any]:
+
+    result = {}
+
+    for name, agent in agents.items():
+        result[name] = get_agent_status(agent)
+
+    return result
+
+
+# ============================================================
 # STARTUP
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @app.on_event("startup")
 async def startup_event():
-    memory.log(
-        "System",
-        "Agent Simulation started.",
-    )
 
-    memory.log(
-        "System",
-        "Registered agents: " + ", ".join(agents.keys()),
-    )
+    try:
+
+        memory.log(
+            "System",
+            "Agent Simulation started.",
+        )
+
+        memory.log(
+            "System",
+            "Agents registered: "
+            + ", ".join(agents.keys()),
+        )
+
+    except Exception:
+        pass
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # DASHBOARD
-# ---------------------------------------------------------------------------
+# ============================================================
 
-@app.get("/", response_class=HTMLResponse)
+@app.get(
+    "/",
+    response_class=HTMLResponse,
+)
 async def home(request: Request):
 
     try:
+
         return templates.TemplateResponse(
             "index.html",
             {
                 "request": request,
-                "world": serialise(world.get_summary()),
-                "agents": safe_agent_status(),
-                "logs": serialise(memory.get_logs(30)),
-                "balance": memory.get_balance("Banker"),
+                "world": serialise(
+                    world.get_summary()
+                ),
+                "agents": all_agent_status(),
+                "logs": serialise(
+                    memory.get_logs(30)
+                ),
+                "balance": memory.get_balance(
+                    "Banker"
+                ),
                 "knowledge_count": len(
-                    memory.data.get("knowledge", [])
+                    memory.data.get(
+                        "knowledge",
+                        [],
+                    )
                 ),
                 "pending_tasks": serialise(
-                    memory.get_tasks(status="pending")
+                    memory.get_tasks(
+                        status="pending"
+                    )
                 ),
                 "economy": serialise(
                     economy.get_economy_report()
@@ -300,15 +338,17 @@ async def home(request: Request):
         )
 
     except Exception as exc:
+
         return HTMLResponse(
-            f"<h1>Dashboard error</h1><pre>{exc}</pre>",
+            "<h1>Dashboard Error</h1>"
+            f"<pre>{exc}</pre>",
             status_code=500,
         )
 
 
-# ---------------------------------------------------------------------------
-# COMMAND API
-# ---------------------------------------------------------------------------
+# ============================================================
+# CREATOR COMMAND
+# ============================================================
 
 @app.post("/command")
 async def send_command(
@@ -318,81 +358,121 @@ async def send_command(
     command = (command or "").strip()
 
     if not command:
-        return JSONResponse(
-            {
-                "success": False,
-                "response": "Empty command.",
-            }
-        )
+
+        return JSONResponse({
+            "success": False,
+            "response": "Empty command.",
+        })
 
     try:
 
-        result = orchestrator.route_command(
-            command=command,
-            source="Creator",
+        # ----------------------------------------------------
+        # Creator commands go directly to Boss.
+        # ----------------------------------------------------
+
+        result = boss.process_order(
+            command
         )
 
-        response = command_text(result)
+        result = serialise(result)
 
-        return JSONResponse(
-            {
-                "success": True,
-                "response": response,
-                "raw": serialise(result),
-                "balance": memory.get_balance("Banker"),
-                "knowledge_count": len(
-                    memory.data.get("knowledge", [])
-                ),
-                "economy_mode": current_mode(),
-            }
+        response = readable_response(
+            result
         )
+
+        return JSONResponse({
+            "success": True,
+            "response": response,
+            "result": result,
+            "balance": memory.get_balance(
+                "Banker"
+            ),
+            "knowledge_count": len(
+                memory.data.get(
+                    "knowledge",
+                    [],
+                )
+            ),
+            "economy_mode": current_mode(),
+        })
 
     except Exception as exc:
 
-        memory.log(
-            "System",
-            f"Command failed: {exc}",
-            level="error",
-        )
+        error_text = traceback.format_exc()
+
+        try:
+
+            memory.log(
+                "System",
+                error_text,
+                level="error",
+            )
+
+        except Exception:
+            pass
 
         return JSONResponse(
             {
                 "success": False,
-                "response": f"COMMAND ERROR: {exc}",
+                "response": (
+                    f"COMMAND ERROR: {exc}"
+                ),
+                "error": str(exc),
+                "traceback": error_text,
             },
             status_code=500,
         )
 
 
-# ---------------------------------------------------------------------------
-# STATUS
-# ---------------------------------------------------------------------------
+# ============================================================
+# HEALTH
+# ============================================================
 
 @app.get("/health")
 async def health():
+
     return {
         "status": "ok",
         "service": "agent-simulation",
+        "agents": list(
+            agents.keys()
+        ),
+        "mode": current_mode(),
     }
 
+
+# ============================================================
+# SYSTEM STATUS
+# ============================================================
 
 @app.get("/api/status")
 async def api_status():
 
     return {
         "status": "ok",
-        "world": serialise(world.get_summary()),
-        "agents": safe_agent_status(),
-        "agent_names": list(agents.keys()),
-        "balance": memory.get_balance("Banker"),
+        "world": serialise(
+            world.get_summary()
+        ),
+        "agents": all_agent_status(),
+        "agent_names": list(
+            agents.keys()
+        ),
+        "balance": memory.get_balance(
+            "Banker"
+        ),
         "knowledge_count": len(
-            memory.data.get("knowledge", [])
+            memory.data.get(
+                "knowledge",
+                [],
+            )
         ),
         "pending_tasks": serialise(
-            memory.get_tasks(status="pending")
+            memory.get_tasks(
+                status="pending"
+            )
         ),
         "logs": serialise(
-            memory.get_logs(20)
+            memory.get_logs(30)
         ),
         "economy": serialise(
             economy.get_economy_report()
@@ -404,98 +484,88 @@ async def api_status():
     }
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # AGENTS
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @app.get("/api/agents")
 async def api_agents():
 
-    output = {}
-
-    for name, agent in agents.items():
-
-        try:
-            output[name] = serialise(
-                agent.get_status_report()
-            )
-
-        except Exception as exc:
-
-            output[name] = {
-                "name": name,
-                "status": "error",
-                "error": str(exc),
-            }
-
     return {
-        "count": len(output),
-        "agents": output,
+        "count": len(agents),
+        "agents": all_agent_status(),
     }
 
 
 @app.get("/api/agents/{name}")
-async def api_agent(name: str):
+async def api_agent(
+    name: str
+):
 
     agent = agents.get(name)
 
     if agent is None:
+
         raise HTTPException(
             status_code=404,
-            detail=f"Agent '{name}' not found.",
+            detail=(
+                f"Agent '{name}' not found."
+            ),
         )
 
-    try:
-        return serialise(
-            agent.get_status_report()
-        )
-
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=str(exc),
-        )
+    return get_agent_status(agent)
 
 
 @app.get("/api/agents/{name}/cognitive")
-async def api_agent_cognitive(name: str):
+async def api_agent_cognitive(
+    name: str
+):
 
     agent = agents.get(name)
 
     if agent is None:
+
         raise HTTPException(
             status_code=404,
-            detail=f"Agent '{name}' not found.",
+            detail=(
+                f"Agent '{name}' not found."
+            ),
         )
 
     try:
+
         return serialise(
             agent.get_cognitive_state()
         )
 
     except Exception as exc:
+
         raise HTTPException(
             status_code=500,
             detail=str(exc),
         )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # TOOLS
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @app.get("/api/tools")
 async def api_tools():
 
     try:
+
+        tool_list = tools.list_tools()
+
         return {
-            "count": len(tools.list_tools()),
+            "count": len(tool_list),
             "tools": serialise(
-                tools.list_tools()
+                tool_list
             ),
         }
 
     except Exception as exc:
+
         return {
             "count": 0,
             "tools": [],
@@ -503,9 +573,9 @@ async def api_tools():
         }
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # ORCHESTRATOR
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @app.get("/api/orchestrator")
 async def api_orchestrator():
@@ -518,23 +588,51 @@ async def api_orchestrator():
 @app.post("/api/orchestrator/start")
 async def api_orchestrator_start():
 
-    result = orchestrator.start()
+    try:
 
-    return {
-        "success": True,
-        "result": serialise(result),
-    }
+        result = orchestrator.start()
+
+        return {
+            "success": True,
+            "result": serialise(
+                result
+            ),
+        }
+
+    except Exception as exc:
+
+        return JSONResponse(
+            {
+                "success": False,
+                "error": str(exc),
+            },
+            status_code=500,
+        )
 
 
 @app.post("/api/orchestrator/stop")
 async def api_orchestrator_stop():
 
-    result = orchestrator.stop()
+    try:
 
-    return {
-        "success": True,
-        "result": serialise(result),
-    }
+        result = orchestrator.stop()
+
+        return {
+            "success": True,
+            "result": serialise(
+                result
+            ),
+        }
+
+    except Exception as exc:
+
+        return JSONResponse(
+            {
+                "success": False,
+                "error": str(exc),
+            },
+            status_code=500,
+        )
 
 
 @app.post("/api/orchestrator/cycle")
@@ -546,21 +644,29 @@ async def api_orchestrator_cycle():
 
         return {
             "success": True,
-            "result": serialise(result),
+            "result": serialise(
+                result
+            ),
         }
 
     except Exception as exc:
 
-        memory.log(
-            "System",
-            f"Orchestrator cycle failed: {exc}",
-            level="error",
-        )
+        error_text = traceback.format_exc()
+
+        try:
+            memory.log(
+                "System",
+                error_text,
+                level="error",
+            )
+        except Exception:
+            pass
 
         return JSONResponse(
             {
                 "success": False,
                 "error": str(exc),
+                "traceback": error_text,
             },
             status_code=500,
         )
@@ -585,7 +691,9 @@ async def api_orchestrator_task(
 
         return {
             "success": True,
-            "result": serialise(result),
+            "result": serialise(
+                result
+            ),
         }
 
     except Exception as exc:
@@ -594,6 +702,7 @@ async def api_orchestrator_task(
             {
                 "success": False,
                 "error": str(exc),
+                "traceback": traceback.format_exc(),
             },
             status_code=500,
         )
@@ -614,7 +723,9 @@ async def api_orchestrator_broadcast(
 
         return {
             "success": True,
-            "result": serialise(result),
+            "result": serialise(
+                result
+            ),
         }
 
     except Exception as exc:
@@ -623,22 +734,29 @@ async def api_orchestrator_broadcast(
             {
                 "success": False,
                 "error": str(exc),
+                "traceback": traceback.format_exc(),
             },
             status_code=500,
         )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # ECONOMY MODE
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @app.get("/api/mode")
 async def api_get_mode():
 
+    mode = current_mode()
+
     return {
-        "mode": current_mode(),
-        "simulation": current_mode() == "simulation",
-        "real": current_mode() == "real",
+        "mode": mode,
+        "simulation": (
+            mode == "simulation"
+        ),
+        "real": (
+            mode == "real"
+        ),
     }
 
 
@@ -647,32 +765,41 @@ async def api_set_mode(
     mode: str = Form(...)
 ):
 
-    requested = (mode or "").strip().lower()
+    requested = (
+        mode or ""
+    ).strip().lower()
 
     if requested == "live":
         requested = "real"
 
-    if requested not in {"simulation", "real"}:
+    if requested not in {
+        "simulation",
+        "real",
+    }:
+
         return JSONResponse(
             {
                 "success": False,
                 "error": (
-                    "Invalid mode. Use 'simulation' or 'real'."
+                    "Invalid mode. "
+                    "Use simulation or real."
                 ),
             },
             status_code=400,
         )
 
-    # Agents/tools must never silently promote themselves into
-    # consequential real-world mode.
+    # Real mode is deliberately blocked here.
+    # A future authenticated Creator control will
+    # be required before consequential live actions.
     if requested == "real":
 
         return JSONResponse(
             {
                 "success": False,
                 "error": (
-                    "Real mode cannot be enabled through this endpoint. "
-                    "Creator authentication/approval is required."
+                    "Real mode requires "
+                    "Creator authentication "
+                    "and approval."
                 ),
             },
             status_code=403,
@@ -680,12 +807,16 @@ async def api_set_mode(
 
     try:
 
-        result = economy.set_mode(requested)
+        result = economy.set_mode(
+            requested
+        )
 
         return {
             "success": True,
             "mode": economy.get_mode(),
-            "result": serialise(result),
+            "result": serialise(
+                result
+            ),
         }
 
     except Exception as exc:
@@ -694,14 +825,15 @@ async def api_set_mode(
             {
                 "success": False,
                 "error": str(exc),
+                "traceback": traceback.format_exc(),
             },
             status_code=500,
         )
 
 
-# ---------------------------------------------------------------------------
-# CREATOR APPROVAL QUEUE
-# ---------------------------------------------------------------------------
+# ============================================================
+# APPROVAL QUEUE
+# ============================================================
 
 @app.get("/api/approvals")
 async def api_approvals():
@@ -709,22 +841,34 @@ async def api_approvals():
     try:
 
         pending = approvals.list_pending()
+
         all_items = approvals.list_all()
 
         return {
             "success": True,
-            "pending": serialise(pending),
-            "all": serialise(all_items),
+            "pending": serialise(
+                pending
+            ),
+            "all": serialise(
+                all_items
+            ),
             "count": len(pending),
         }
 
     except Exception as exc:
 
-        memory.log(
-            "System",
-            f"Approval queue error: {exc}",
-            level="error",
-        )
+        error_text = traceback.format_exc()
+
+        try:
+
+            memory.log(
+                "System",
+                error_text,
+                level="error",
+            )
+
+        except Exception:
+            pass
 
         return JSONResponse(
             {
@@ -738,7 +882,9 @@ async def api_approvals():
         )
 
 
-@app.post("/api/approvals/{approval_id}/approve")
+@app.post(
+    "/api/approvals/{approval_id}/approve"
+)
 async def approve_approval(
     approval_id: str
 ):
@@ -753,27 +899,39 @@ async def approve_approval(
 
         return {
             "success": True,
-            "approval": serialise(result),
+            "approval": serialise(
+                result
+            ),
         }
 
     except Exception as exc:
 
-        memory.log(
-            "System",
-            f"Approval failed: {exc}",
-            level="error",
-        )
+        error_text = traceback.format_exc()
+
+        try:
+
+            memory.log(
+                "System",
+                error_text,
+                level="error",
+            )
+
+        except Exception:
+            pass
 
         return JSONResponse(
             {
                 "success": False,
                 "error": str(exc),
+                "traceback": error_text,
             },
             status_code=500,
         )
 
 
-@app.post("/api/approvals/{approval_id}/deny")
+@app.post(
+    "/api/approvals/{approval_id}/deny"
+)
 async def deny_approval(
     approval_id: str
 ):
@@ -788,29 +946,39 @@ async def deny_approval(
 
         return {
             "success": True,
-            "approval": serialise(result),
+            "approval": serialise(
+                result
+            ),
         }
 
     except Exception as exc:
 
-        memory.log(
-            "System",
-            f"Approval denial failed: {exc}",
-            level="error",
-        )
+        error_text = traceback.format_exc()
+
+        try:
+
+            memory.log(
+                "System",
+                error_text,
+                level="error",
+            )
+
+        except Exception:
+            pass
 
         return JSONResponse(
             {
                 "success": False,
                 "error": str(exc),
+                "traceback": error_text,
             },
             status_code=500,
         )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # WORLD
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @app.get("/api/world")
 async def api_world():
@@ -823,20 +991,34 @@ async def api_world():
 @app.post("/api/advance_time")
 async def advance_time():
 
-    result = world.advance_time()
+    try:
 
-    return {
-        "success": True,
-        "world": serialise(
-            world.get_summary()
-        ),
-        "result": serialise(result),
-    }
+        result = world.advance_time()
+
+        return {
+            "success": True,
+            "world": serialise(
+                world.get_summary()
+            ),
+            "result": serialise(
+                result
+            ),
+        }
+
+    except Exception as exc:
+
+        return JSONResponse(
+            {
+                "success": False,
+                "error": str(exc),
+            },
+            status_code=500,
+        )
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # ECONOMY
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @app.get("/api/economy")
 async def api_economy():
@@ -850,19 +1032,24 @@ async def api_economy():
 async def api_economy_vault():
 
     return {
-        "balance": memory.get_balance("Banker"),
+        "balance": memory.get_balance(
+            "Banker"
+        ),
         "economy": serialise(
             economy.get_economy_report()
         ),
         "transactions": serialise(
-            memory.data.get("transactions", [])
+            memory.data.get(
+                "transactions",
+                [],
+            )
         ),
     }
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # INFOFARMER NOTES
-# ---------------------------------------------------------------------------
+# ============================================================
 
 @app.post("/agent/InfoFarmer/note")
 async def note_action(
@@ -872,17 +1059,27 @@ async def note_action(
 
     kept = []
 
-    for item in memory.data.get("knowledge", []):
+    for item in memory.data.get(
+        "knowledge",
+        [],
+    ):
 
-        if item.get("id") == note_id and action == "delete":
+        if (
+            item.get("id") == note_id
+            and action == "delete"
+        ):
             continue
 
-        if item.get("id") == note_id and action == "archive":
+        if (
+            item.get("id") == note_id
+            and action == "archive"
+        ):
             item["archived"] = True
 
         kept.append(item)
 
     memory.data["knowledge"] = kept
+
     memory.save()
 
     return {
@@ -891,9 +1088,9 @@ async def note_action(
     }
 
 
-# ---------------------------------------------------------------------------
-# ERROR HANDLER
-# ---------------------------------------------------------------------------
+# ============================================================
+# GLOBAL ERROR HANDLER
+# ============================================================
 
 @app.exception_handler(Exception)
 async def global_exception_handler(
@@ -901,25 +1098,37 @@ async def global_exception_handler(
     exc: Exception,
 ):
 
-    memory.log(
-        "System",
-        f"Unhandled API error on {request.url.path}: {exc}",
-        level="error",
-    )
+    error_text = traceback.format_exc()
+
+    try:
+
+        memory.log(
+            "System",
+            (
+                f"Unhandled error on "
+                f"{request.url.path}\n"
+                f"{error_text}"
+            ),
+            level="error",
+        )
+
+    except Exception:
+        pass
 
     return JSONResponse(
         {
             "success": False,
             "error": str(exc),
             "path": request.url.path,
+            "traceback": error_text,
         },
         status_code=500,
     )
 
 
-# ---------------------------------------------------------------------------
-# LOCAL RUNNER
-# ---------------------------------------------------------------------------
+# ============================================================
+# LOCAL DEVELOPMENT
+# ============================================================
 
 if __name__ == "__main__":
 
@@ -937,4 +1146,4 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
         reload=False,
-       )
+    )
