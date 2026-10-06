@@ -1,612 +1,270 @@
 """
-OpportunityAgent
-----------------
+Opportunity Agent
+-----------------
+Finds, evaluates, and develops potential revenue opportunities.
 
-Economic Scout & Analyst.
-
-Responsibilities:
-
-    FIND
-    ANALYSE
-    VALIDATE
-    TEST
-    REPORT
-
-The OpportunityAgent does not directly control money.
-
-Financial state remains under the Banker/shared economy system.
-
-Important:
-    REAL mode does not bypass Creator approval.
-
-Economic experiments are protected actions and therefore
-pass through the ToolRegistry approval system.
+The agent can research and analyse opportunities autonomously.
+Consequential financial actions require Creator approval through the
+central ToolRegistry.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from .base_agent import BaseAgent
-from core.memory import SharedMemory
-from core.tools import ToolRegistry
-from core.economy import Economy
 
 
 class OpportunityAgent(BaseAgent):
-
-    def __init__(
-        self,
-        memory: SharedMemory,
-        tools: ToolRegistry,
-        economy: Economy,
-    ):
+    def __init__(self, memory, tools):
         super().__init__(
             name="OpportunityAgent",
-            role="Economic Scout & Analyst",
+            role="Opportunity Discovery and Revenue Strategy",
             memory=memory,
             tools=tools,
             description=(
-                "Finds, analyses, tests and reports "
-                "on economic opportunities. "
-                "Works in simulation or real mode "
-                "while respecting Creator approval."
+                "Discovers potential opportunities, researches them, "
+                "scores their viability, designs experiments, and "
+                "reports findings to the Boss."
             ),
         )
 
-        self.economy = economy
+    def process_order(self, order: str) -> Dict[str, Any]:
+        command = (order or "").strip()
 
-        self.update_status("ready")
+        if not command:
+            return {
+                "status": "error",
+                "agent": self.name,
+                "message": "No opportunity order supplied.",
+            }
 
-    # ------------------------------------------------------------------
-    # Orders
-    # ------------------------------------------------------------------
+        lowered = command.lower()
 
-    def process_order(
-        self,
-        order: str,
-    ) -> str:
+        if lowered in {"help", "?", "commands"}:
+            return self.get_help()
 
-        self.memory.log(
-            "OpportunityAgent",
-            f"Received order: {order}",
-        )
+        if lowered in {"mode", "money mode", "operating mode"}:
+            return self.execute_tool("money_mode")
 
-        order_text = order.strip()
-        order_lower = order_text.lower()
+        if lowered in {
+            "scan",
+            "scan opportunities",
+            "find opportunities",
+            "find opportunity",
+        }:
+            return self.execute_tool("find_opportunity")
 
-        if not order_text:
-            return (
-                "OpportunityAgent needs an objective."
-            )
+        if lowered.startswith("scan "):
+            criteria = command[5:].strip()
 
-        # --------------------------------------------------------------
-        # Economy mode
-        # --------------------------------------------------------------
+            if not criteria:
+                return self.execute_tool("find_opportunity")
 
-        if "mode" in order_lower:
-
-            if "simulation" in order_lower:
-                result = self.execute_tool(
-                    "money_mode",
-                    mode="simulation",
-                )
-
-            elif (
-                "real" in order_lower
-                or "live" in order_lower
-            ):
-                result = self.execute_tool(
-                    "money_mode",
-                    mode="real",
-                )
-
-            else:
-                result = self.execute_tool(
-                    "money_mode"
-                )
-
-            return self._tool_message(
-                result
-            )
-
-        # --------------------------------------------------------------
-        # Scan
-        # --------------------------------------------------------------
-
-        if any(
-            word in order_lower
-            for word in (
-                "scan",
-                "find",
-                "discover",
-            )
-        ):
-            return self._scan_opportunities()
-
-        # --------------------------------------------------------------
-        # List
-        # --------------------------------------------------------------
-
-        if (
-            "opportunities" in order_lower
-            or order_lower == "list"
-            or "list opportunities"
-            in order_lower
-        ):
-            return self._list_opportunities()
-
-        # --------------------------------------------------------------
-        # Analyse
-        # --------------------------------------------------------------
-
-        if (
-            "analyse" in order_lower
-            or "analyze" in order_lower
-        ):
-            opp_id = self._extract_id(
-                order_text
-            )
-
-            if opp_id is None:
-                return (
-                    "Please specify an opportunity "
-                    "ID, e.g. 'analyse 1'."
-                )
-
-            return self._analyse_opportunity(
-                opp_id
-            )
-
-        # --------------------------------------------------------------
-        # Test / experiment
-        # --------------------------------------------------------------
-
-        if (
-            "test" in order_lower
-            or "experiment" in order_lower
-        ):
-            opp_id = self._extract_id(
-                order_text
-            )
-
-            if opp_id is None:
-                return (
-                    "Please specify an opportunity "
-                    "ID, e.g. 'test 1'."
-                )
-
-            return self._test_opportunity(
-                opp_id
-            )
-
-        # --------------------------------------------------------------
-        # Economy report
-        # --------------------------------------------------------------
-
-        if (
-            "report" in order_lower
-            or "economy report"
-            in order_lower
-        ):
-            return self._economy_report()
-
-        return (
-            "OpportunityAgent received: "
-            f"'{order_text}'.\n\n"
-            "Available commands:\n"
-            "  scan\n"
-            "  opportunities\n"
-            "  analyse <id>\n"
-            "  test <id>\n"
-            "  report\n"
-            "  mode\n"
-            "  mode simulation\n"
-            "  mode real"
-        )
-
-    # ------------------------------------------------------------------
-    # Scan
-    # ------------------------------------------------------------------
-
-    def _scan_opportunities(
-        self,
-    ) -> str:
-
-        ideas = [
-            {
-                "name": (
-                    "AI Research Summary Service"
-                ),
-                "description": (
-                    "Sell short AI-generated "
-                    "research summaries on "
-                    "legitimate trending topics."
-                ),
-                "startup_cost": 30,
-                "expected_expenses": 15,
-                "expected_revenue": 120,
-                "risk": "low",
-            },
-            {
-                "name": (
-                    "Digital Template Pack"
-                ),
-                "description": (
-                    "Create and sell original "
-                    "Notion, Canva or spreadsheet "
-                    "templates."
-                ),
-                "startup_cost": 20,
-                "expected_expenses": 10,
-                "expected_revenue": 90,
-                "risk": "low",
-            },
-            {
-                "name": (
-                    "Automated Lead Finder"
-                ),
-                "description": (
-                    "Provide a legitimate service "
-                    "that identifies potential "
-                    "customers for small businesses."
-                ),
-                "startup_cost": 80,
-                "expected_expenses": 40,
-                "expected_revenue": 250,
-                "risk": "medium",
-            },
-        ]
-
-        created = []
-
-        for idea in ideas:
-
-            result = self.execute_tool(
+            return self.execute_tool(
                 "find_opportunity",
-                **idea,
+                criteria=criteria,
             )
 
-            if result.get("success"):
-                created.append(
-                    result.get("result")
-                )
+        if lowered.startswith("find "):
+            criteria = command[5:].strip()
 
-        if not created:
-            return (
-                "No new opportunities found."
+            if not criteria:
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": "Opportunity criteria are required.",
+                }
+
+            return self.execute_tool(
+                "find_opportunity",
+                criteria=criteria,
             )
 
-        message = (
-            "Opportunity scan complete. "
-            f"Found {len(created)} ideas:\n\n"
-        )
+        if lowered in {"opportunities", "list opportunities", "list"}:
+            return self.execute_tool("list_opportunities")
 
-        for opportunity in created:
+        if lowered.startswith("analyse "):
+            target = command[8:].strip()
 
-            if not isinstance(
-                opportunity,
-                dict,
-            ):
-                continue
+            if not target:
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": "Opportunity ID or description is required.",
+                }
 
-            message += (
-                f"[{opportunity.get('id', '?')}] "
-                f"{opportunity.get('name', 'Unnamed')} "
-                f"(Risk: "
-                f"{opportunity.get('risk', 'unknown')})\n"
-            )
+            return self._analyse(target)
 
-        message += (
-            "\nUse "
-            "'analyse <id>' "
-            "or "
-            "'test <id>' "
-            "next."
-        )
+        if lowered.startswith("analyze "):
+            target = command[8:].strip()
 
-        return message
+            if not target:
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": "Opportunity ID or description is required.",
+                }
 
-    # ------------------------------------------------------------------
-    # List
-    # ------------------------------------------------------------------
+            return self._analyse(target)
 
-    def _list_opportunities(
-        self,
-    ) -> str:
+        if lowered in {"analyse", "analyze"}:
+            return {
+                "status": "error",
+                "agent": self.name,
+                "message": "Opportunity ID or description is required.",
+            }
 
-        result = self.execute_tool(
-            "list_opportunities"
-        )
+        if lowered.startswith("test "):
+            description = command[5:].strip()
 
-        if not result.get("success"):
-            return (
-                "Could not list opportunities: "
-                + str(
-                    result.get(
-                        "error",
-                        "Unknown error.",
-                    )
-                )
-            )
+            if not description:
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": "Experiment description is required.",
+                }
 
-        opportunities = result.get(
-            "result",
-            [],
-        )
+            return self._create_experiment(description)
 
-        if not opportunities:
-            return (
-                "No opportunities yet. "
-                "Try 'scan'."
-            )
+        if lowered.startswith("experiment "):
+            description = command[11:].strip()
 
-        message = (
-            "Current Opportunities:\n\n"
-        )
+            if not description:
+                return {
+                    "status": "error",
+                    "agent": self.name,
+                    "message": "Experiment description is required.",
+                }
 
-        for opportunity in opportunities:
+            return self._create_experiment(description)
 
-            message += (
-                f"[{opportunity.get('id', '?')}] "
-                f"{opportunity.get('name', 'Unnamed')} "
-                f"— "
-                f"{opportunity.get('status', 'UNKNOWN')} "
-                f"(Risk: "
-                f"{opportunity.get('risk', 'unknown')})\n"
-            )
+        if lowered in {"test", "experiment"}:
+            return {
+                "status": "error",
+                "agent": self.name,
+                "message": "Experiment description is required.",
+            }
 
-        return message
+        if lowered in {
+            "report",
+            "economy report",
+            "revenue report",
+            "financial report",
+        }:
+            return self.execute_tool("economy_report")
 
-    # ------------------------------------------------------------------
-    # Analyse
-    # ------------------------------------------------------------------
+        if lowered in {"status", "agent status"}:
+            return self.get_status_report()
 
-    def _analyse_opportunity(
-        self,
-        opp_id: int,
-    ) -> str:
+        if lowered in {"run", "cycle", "run cycle"}:
+            return self.run_cycle()
 
+        return {
+            "status": "error",
+            "agent": self.name,
+            "message": f"Unknown OpportunityAgent command: {command}",
+            "help": self.get_help(),
+        }
+
+    def _analyse(self, target: str) -> Dict[str, Any]:
         result = self.execute_tool(
             "analyse_opportunity",
-            opp_id=opp_id,
+            opportunity_id=target,
         )
 
-        if not result.get("success"):
-            return (
-                f"Failed to analyse "
-                f"Opportunity #{opp_id}: "
-                + str(
-                    result.get(
-                        "error",
-                        "Unknown error.",
-                    )
-                )
-            )
+        self.observe_result(result)
 
-        analysis = result.get(
-            "result",
-            {},
-        )
+        return result
 
-        if not isinstance(
-            analysis,
-            dict,
-        ):
-            return (
-                f"Opportunity #{opp_id} "
-                "returned an invalid analysis."
-            )
-
-        return (
-            f"Analysis of Opportunity #{opp_id}:\n"
-            f"Potential Profit: "
-            f"${analysis.get('potential_profit', 0)}\n"
-            f"Estimated ROI: "
-            f"{analysis.get('estimated_roi_percent', 0)}%\n"
-            f"Risk: "
-            f"{analysis.get('risk_level', 'unknown')}\n"
-            f"Recommendation: "
-            f"{analysis.get('recommendation', 'No recommendation')}"
-        )
-
-    # ------------------------------------------------------------------
-    # Test
-    # ------------------------------------------------------------------
-
-    def _test_opportunity(
-        self,
-        opp_id: int,
-    ) -> str:
-
-        mode = self.economy.get_mode()
-
-        # Keep the simulation test inexpensive.
-        # REAL mode uses the same approval-protected tool,
-        # but with a smaller default budget.
-        if mode == "simulation":
-            budget = 50.0
-        else:
-            budget = 10.0
-
+    def _create_experiment(self, description: str) -> Dict[str, Any]:
         result = self.execute_tool(
             "create_experiment",
-            opp_id=opp_id,
-            budget=budget,
+            description=description,
         )
 
-        if not result.get("success"):
+        self.observe_result(result)
 
-            if result.get(
-                "requires_approval"
-            ):
-                approval_id = result.get(
-                    "approval_id"
-                )
+        return result
 
-                return (
-                    "Experiment requires "
-                    "Creator approval before it "
-                    "can run.\n"
-                    f"Opportunity: #{opp_id}\n"
-                    f"Budget: ${budget:.2f}\n"
-                    f"Approval request: "
-                    f"#{approval_id}"
-                )
+    def scan(self, criteria: str = "") -> Dict[str, Any]:
+        kwargs = {}
 
-            return (
-                "Could not start experiment: "
-                + str(
-                    result.get(
-                        "error",
-                        "Unknown error.",
-                    )
-                )
-            )
-
-        experiment = result.get(
-            "result",
-            {},
-        )
-
-        if not isinstance(
-            experiment,
-            dict,
-        ):
-            return (
-                "Experiment started, but the "
-                "economy returned an unexpected result."
-            )
-
-        return (
-            f"Experiment "
-            f"#{experiment.get('id', '?')} "
-            f"started for Opportunity "
-            f"#{opp_id} "
-            f"with budget "
-            f"${budget:.2f}."
-        )
-
-    # ------------------------------------------------------------------
-    # Economy report
-    # ------------------------------------------------------------------
-
-    def _economy_report(
-        self,
-    ) -> str:
+        if criteria:
+            kwargs["criteria"] = criteria
 
         result = self.execute_tool(
-            "economy_report"
+            "find_opportunity",
+            **kwargs,
         )
 
-        if not result.get("success"):
-            return (
-                "Could not generate economy report: "
-                + str(
-                    result.get(
-                        "error",
-                        "Unknown error.",
-                    )
-                )
-            )
+        self.observe_result(result)
 
-        report = result.get(
-            "result",
-            {},
+        return result
+
+    def list_opportunities(self) -> Dict[str, Any]:
+        result = self.execute_tool("list_opportunities")
+
+        self.observe_result(result)
+
+        return result
+
+    def analyse(self, opportunity_id: str) -> Dict[str, Any]:
+        result = self.execute_tool(
+            "analyse_opportunity",
+            opportunity_id=opportunity_id,
         )
 
-        if not isinstance(
-            report,
-            dict,
-        ):
-            return (
-                "Economy returned an invalid report."
-            )
+        self.observe_result(result)
 
-        statuses = report.get(
-            "opportunities_by_status",
-            {},
+        return result
+
+    def create_experiment(self, description: str) -> Dict[str, Any]:
+        result = self.execute_tool(
+            "create_experiment",
+            description=description,
         )
 
-        return (
-            "=== ECONOMY REPORT "
-            f"({report.get('mode', 'UNKNOWN')}) ===\n"
-            f"Opportunities: "
-            f"{report.get('opportunities_total', 0)}\n"
-            f"  DISCOVERED: "
-            f"{statuses.get('DISCOVERED', 0)}\n"
-            f"  ANALYSED:   "
-            f"{statuses.get('ANALYSED', 0)}\n"
-            f"  TESTING:    "
-            f"{statuses.get('TESTING', 0)}\n"
-            f"  VALIDATED:  "
-            f"{statuses.get('VALIDATED', 0)}\n"
-            f"  REJECTED:   "
-            f"{statuses.get('REJECTED', 0)}\n"
-            f"Total Revenue:  "
-            f"${report.get('total_revenue', 0)}\n"
-            f"Total Expenses: "
-            f"${report.get('total_expenses', 0)}\n"
-            f"Total Profit:   "
-            f"${report.get('total_profit', 0)}\n"
-            f"Active Experiments: "
-            f"{report.get('active_experiments', 0)}"
-        )
+        self.observe_result(result)
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+        return result
 
-    @staticmethod
-    def _extract_id(
-        text: str,
-    ) -> Optional[int]:
+    def economy_report(self) -> Dict[str, Any]:
+        result = self.execute_tool("economy_report")
 
-        digits = ""
+        self.observe_result(result)
 
-        for character in text:
-            if character.isdigit():
-                digits += character
-            elif digits:
-                break
+        return result
 
-        if not digits:
-            return None
-
-        try:
-            return int(digits)
-        except ValueError:
-            return None
-
-    @staticmethod
-    def _tool_message(
-        result: Dict[str, Any],
-    ) -> str:
-
-        if result.get("success"):
-            return str(
-                result.get(
-                    "result",
-                    "Action completed.",
-                )
-            )
-
-        if result.get(
-            "requires_approval"
-        ):
-            approval_id = result.get(
-                "approval_id"
-            )
-
-            return (
-                "Creator approval required.\n"
-                f"Approval request: #{approval_id}"
-            )
-
-        return (
-            "Tool failed: "
-            + str(
-                result.get(
-                    "error",
-                    "Unknown error.",
-                )
-            )
-        )
+    def get_help(self) -> Dict[str, Any]:
+        return {
+            "status": "success",
+            "agent": self.name,
+            "role": self.role,
+            "commands": [
+                "mode",
+                "scan",
+                "scan <criteria>",
+                "find <criteria>",
+                "opportunities",
+                "analyse <opportunity_id>",
+                "analyze <opportunity_id>",
+                "test <experiment description>",
+                "experiment <experiment description>",
+                "report",
+                "status",
+                "run",
+                "help",
+            ],
+            "capabilities": [
+                "Opportunity discovery",
+                "Opportunity analysis",
+                "Revenue strategy",
+                "Experiment design",
+                "Economic reporting",
+                "Opportunity prioritisation",
+            ],
+            "safety": (
+                "Research and analysis may run autonomously. "
+                "Consequential financial or external actions require "
+                "Creator approval."
+            ),
+        }
