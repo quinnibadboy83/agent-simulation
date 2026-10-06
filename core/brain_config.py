@@ -9,60 +9,77 @@ class BrainConfig:
     """
     Configuration for the autonomous LLM brain.
 
-    The model itself is intentionally external to the Python application.
-    This allows us to start with a lightweight open model and later move
-    to a stronger model without rebuilding the agent architecture.
+    The LLM is external to the agent application.
+
+    The model is responsible for reasoning, planning and deciding which
+    available capabilities it wants to use.
+
+    Security boundaries are NOT implemented by limiting the model here.
+    Consequential actions are controlled externally by the ToolRegistry
+    and Creator ApprovalGate.
     """
 
     enabled: bool = False
 
+    # Supported conceptually:
+    # llama_cpp
+    # openai_compatible
+    # any future OpenAI-compatible provider
     provider: str = "llama_cpp"
 
+    # OpenAI-compatible API root.
+    #
+    # Example llama.cpp:
+    # http://127.0.0.1:8080/v1
+    #
+    # Example remote server:
+    # https://your-server.example/v1
     base_url: str = "http://127.0.0.1:8080/v1"
 
     model: str = "local-model"
 
-    api_key: str = "sk-no-key-required"
+    # Empty is valid for local llama.cpp servers.
+    api_key: str = ""
 
+    # The model controls its own generation behaviour.
     temperature: float = 0.2
 
-    max_tokens: int = 2048
+    # This is a request parameter, not a safety restriction.
+    # Increase it for larger reasoning/output requirements.
+    max_tokens: int = 4096
 
-    timeout: float = 120.0
+    # Maximum HTTP request duration.
+    timeout: float = 300.0
 
-    max_reasoning_steps: int = 12
+    # Maximum number of agent reasoning/tool iterations.
+    #
+    # This is an orchestration guard against infinite loops.
+    # It does NOT restrict what the model is allowed to reason about
+    # or what capabilities it can request.
+    max_reasoning_steps: int = 24
 
     @classmethod
     def from_environment(cls) -> "BrainConfig":
-        enabled_value = os.getenv(
-            "BRAIN_ENABLED",
-            "false",
-        ).strip().lower()
-
-        enabled = enabled_value in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-
         return cls(
-            enabled=enabled,
+            enabled=_bool_env(
+                "BRAIN_ENABLED",
+                False,
+            ),
             provider=os.getenv(
                 "BRAIN_PROVIDER",
                 "llama_cpp",
-            ),
+            ).strip(),
             base_url=os.getenv(
                 "BRAIN_BASE_URL",
                 "http://127.0.0.1:8080/v1",
-            ).rstrip("/"),
+            ).strip().rstrip("/"),
             model=os.getenv(
                 "BRAIN_MODEL",
                 "local-model",
-            ),
+            ).strip(),
             api_key=os.getenv(
                 "BRAIN_API_KEY",
-                "sk-no-key-required",
+                "",
             ),
             temperature=_float_env(
                 "BRAIN_TEMPERATURE",
@@ -70,19 +87,24 @@ class BrainConfig:
             ),
             max_tokens=_int_env(
                 "BRAIN_MAX_TOKENS",
-                2048,
+                4096,
             ),
             timeout=_float_env(
                 "BRAIN_TIMEOUT",
-                120.0,
+                300.0,
             ),
             max_reasoning_steps=_int_env(
                 "BRAIN_MAX_REASONING_STEPS",
-                12,
+                24,
             ),
         )
 
     def public(self) -> dict:
+        """
+        Return configuration suitable for API status output.
+
+        Never expose the API key.
+        """
         return {
             "enabled": self.enabled,
             "provider": self.provider,
@@ -95,15 +117,61 @@ class BrainConfig:
         }
 
 
-def _float_env(name: str, default: float) -> float:
+def _bool_env(
+    name: str,
+    default: bool,
+) -> bool:
+    value = os.getenv(
+        name,
+        str(default),
+    ).strip().lower()
+
+    return value in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "enabled",
+    }
+
+
+def _float_env(
+    name: str,
+    default: float,
+) -> float:
     try:
-        return float(os.getenv(name, str(default)))
+        value = float(
+            os.getenv(
+                name,
+                str(default),
+            )
+        )
+
+        if value < 0:
+            return default
+
+        return value
+
     except (TypeError, ValueError):
         return default
 
 
-def _int_env(name: str, default: int) -> int:
+def _int_env(
+    name: str,
+    default: int,
+) -> int:
     try:
-        return int(os.getenv(name, str(default)))
+        value = int(
+            os.getenv(
+                name,
+                str(default),
+            )
+        )
+
+        if value <= 0:
+            return default
+
+        return value
+
     except (TypeError, ValueError):
         return default
