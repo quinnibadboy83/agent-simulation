@@ -1,17 +1,16 @@
 """
 Tool Registry
 -------------
-Central capability layer for all agents.
+Central tool system for the agent simulation.
 
-Every tool declares:
-- whether it is safe in simulation
-- whether it can operate in real mode
-- whether Creator approval is required
-
-Consequential actions can never bypass the registry approval gate.
+Tools are registered with explicit safety metadata. Simulation-safe tools
+may run autonomously. Consequential tools require Creator approval and,
+when live mode is enabled, must also be explicitly marked live-capable.
 """
 
-from typing import Any, Callable, Dict, List, Optional
+from __future__ import annotations
+
+from typing import Any, Callable, Dict, Optional
 
 from .approvals import ApprovalGate
 
@@ -20,121 +19,76 @@ class ToolRegistry:
     def __init__(
         self,
         memory,
+        world=None,
         economy=None,
+        research=None,
     ):
         self.memory = memory
+        self.world = world
         self.economy = economy
-        self.approval_gate = ApprovalGate(memory)
+        self.research = research
         self._tools: Dict[str, Dict[str, Any]] = {}
-
-    # -----------------------------------------------------------------
-    # Registration
-    # -----------------------------------------------------------------
+        self.approvals = ApprovalGate(memory)
 
     def register(
         self,
         name: str,
-        function: Callable,
+        handler: Callable[..., Any],
         description: str = "",
         simulation_safe: bool = True,
         live_capable: bool = False,
         protected: bool = False,
+        category: str = "general",
     ) -> Dict[str, Any]:
-        name = (name or "").strip()
-
-        if not name:
-            raise ValueError(
-                "Tool name is required."
-            )
-
-        if not callable(function):
-            raise TypeError(
-                f"Tool '{name}' must be callable."
-            )
+        if not name or not callable(handler):
+            raise ValueError("Tool name and callable handler are required.")
 
         self._tools[name] = {
             "name": name,
-            "function": function,
+            "handler": handler,
             "description": description,
-            "simulation_safe": bool(
-                simulation_safe
-            ),
-            "live_capable": bool(
-                live_capable
-            ),
-            "protected": bool(
-                protected
-            ),
+            "simulation_safe": bool(simulation_safe),
+            "live_capable": bool(live_capable),
+            "protected": bool(protected),
+            "category": category,
         }
 
-        return {
-            "status": "success",
-            "tool": name,
-        }
+        return self._public_tool(self._tools[name])
 
-    def unregister(
-        self,
-        name: str,
-    ) -> Dict[str, Any]:
-        if name not in self._tools:
-            return {
-                "status": "error",
-                "message": f"Unknown tool: {name}",
-            }
+    def unregister(self, name: str) -> bool:
+        return self._tools.pop(name, None) is not None
 
-        del self._tools[name]
-
-        return {
-            "status": "success",
-            "tool": name,
-        }
-
-    # -----------------------------------------------------------------
-    # Discovery
-    # -----------------------------------------------------------------
-
-    def get(
-        self,
-        name: str,
-    ) -> Optional[Dict[str, Any]]:
+    def get(self, name: str) -> Optional[Dict[str, Any]]:
         return self._tools.get(name)
 
-    def list_tools(self) -> List[Dict[str, Any]]:
-        result = []
-
-        for name, tool in sorted(
-            self._tools.items()
-        ):
-            result.append(
-                self._public_tool(tool)
-            )
-
-        return result
+    def list_tools(self) -> list[Dict[str, Any]]:
+        return [
+            self._public_tool(tool)
+            for tool in self._tools.values()
+        ]
 
     def capabilities(self) -> Dict[str, Any]:
+        tools = self.list_tools()
+
         return {
-            "status": "success",
-            "tools": self.list_tools(),
-            "simulation": [
-                name
-                for name, tool in self._tools.items()
+            "count": len(tools),
+            "simulation_safe": [
+                tool["name"]
+                for tool in tools
                 if tool["simulation_safe"]
             ],
             "live_capable": [
-                name
-                for name, tool in self._tools.items()
+                tool["name"]
+                for tool in tools
                 if tool["live_capable"]
             ],
             "protected": [
-                name
-                for name, tool in self._tools.items()
+                tool["name"]
+                for tool in tools
                 if tool["protected"]
             ],
+            "tools": tools,
         }
-
-    # -----------------------------------------------------------------
-    # Mode
-    # -----------------------------------------------------------------
 
     def get_mode(self) -> str:
         if self.economy is not None:
@@ -143,191 +97,145 @@ class ToolRegistry:
             except Exception:
                 pass
 
-        try:
-            state = self.memory.get_world_state()
-            return state.get(
-                "economy_mode",
-                "simulation",
-            )
-        except Exception:
-            return "simulation"
+        if self.memory is not None:
+            try:
+                return str(
+                    self.memory.get_world_state().get(
+                        "economy_mode",
+                        "simulation",
+                    )
+                )
+            except Exception:
+                pass
+
+        return "simulation"
 
     def is_simulation(self) -> bool:
         return self.get_mode() == "simulation"
 
     def is_real(self) -> bool:
-        return self.get_mode() == "real"
-
-    # -----------------------------------------------------------------
-    # Approval
-    # -----------------------------------------------------------------
+        return self.get_mode() in {"real", "live"}
 
     def request_approval(
         self,
         agent: str,
         tool: str,
-        reason: str,
-        payload: Optional[Dict[str, Any]] = None,
+        reason: str = "",
+        parameters: Optional[Dict[str, Any]] = None,
         risk: str = "medium",
-        plan: Optional[List[str]] = None,
+        plan: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        if payload is None:
-            payload = {}
+        tool_info = self.get(tool)
 
-        if plan is None:
-            plan = []
+        if tool_info is None:
+            return {
+                "status": "error",
+                "message": f"Unknown tool: {tool}",
+            }
 
-        result = self.approval_gate.request(
+        return self.approvals.request(
             agent=agent,
             tool=tool,
             reason=reason,
+            parameters=parameters or {},
             risk=risk,
-            payload=payload,
             plan=plan,
         )
 
-        return {
-            "status": "approval_required",
-            "approval_id": result.get(
-                "id"
-            ),
-            "agent": agent,
-            "tool": tool,
-            "reason": reason,
-            "risk": risk,
-            "parameters": payload,
-            "message": (
-                "Creator approval is required "
-                "before this exact action can "
-                "execute."
-            ),
-        }
-
-    # -----------------------------------------------------------------
-    # Execution
-    # -----------------------------------------------------------------
-
     def execute(
         self,
-        tool_name: str,
-        agent: str = "System",
-        approval_id: str = "",
-        **kwargs,
+        tool: str,
+        agent: str = "unknown",
+        approval_id: Optional[str] = None,
+        **parameters: Any,
     ) -> Dict[str, Any]:
-        tool = self._tools.get(tool_name)
+        tool_info = self.get(tool)
 
-        if tool is None:
+        if tool_info is None:
             return {
                 "status": "error",
-                "tool": tool_name,
-                "message": (
-                    f"Unknown tool: {tool_name}"
-                ),
+                "tool": tool,
+                "message": f"Unknown tool: {tool}",
             }
 
         mode = self.get_mode()
 
-        # -------------------------------------------------------------
-        # Simulation protection
-        # -------------------------------------------------------------
-
-        if (
-            mode == "simulation"
-            and not tool["simulation_safe"]
-        ):
-            return {
-                "status": "blocked",
-                "tool": tool_name,
-                "agent": agent,
-                "message": (
-                    "This tool is not available "
-                    "in simulation mode."
-                ),
-                "mode": mode,
-            }
-
-        # -------------------------------------------------------------
-        # Real-mode capability protection
-        # -------------------------------------------------------------
-
-        if (
-            mode == "real"
-            and not tool["live_capable"]
-        ):
-            return {
-                "status": "blocked",
-                "tool": tool_name,
-                "agent": agent,
-                "message": (
-                    "This tool is not enabled "
-                    "for real mode."
-                ),
-                "mode": mode,
-            }
-
-        # -------------------------------------------------------------
-        # Protected action
-        # -------------------------------------------------------------
-
-        if tool["protected"]:
-            if not approval_id:
-                return self.request_approval(
-                    agent=agent,
-                    tool=tool_name,
-                    reason=(
-                        f"Agent requested protected "
-                        f"tool '{tool_name}'."
-                    ),
-                    payload=kwargs,
-                    risk="high",
-                    plan=[
-                        "Validate requested action.",
-                        "Obtain exact Creator approval.",
-                        "Execute approved action once.",
-                        "Record execution result.",
-                    ],
-                )
-
-            validation = (
-                self.approval_gate.validate(
-                    approval_id=approval_id,
-                    agent=agent,
-                    tool=tool_name,
-                    payload=kwargs,
-                )
-            )
-
-            if not validation.get(
-                "valid",
-                False,
-            ):
+        if mode == "simulation":
+            if not tool_info["simulation_safe"]:
                 return {
                     "status": "blocked",
-                    "tool": tool_name,
+                    "tool": tool,
+                    "agent": agent,
+                    "mode": mode,
+                    "message": (
+                        "This tool is not simulation-safe and cannot "
+                        "run in simulation mode."
+                    ),
+                }
+
+        elif mode in {"real", "live"}:
+            if not tool_info["live_capable"]:
+                return {
+                    "status": "blocked",
+                    "tool": tool,
+                    "agent": agent,
+                    "mode": mode,
+                    "message": (
+                        "This tool is not enabled for live execution."
+                    ),
+                }
+
+        else:
+            return {
+                "status": "error",
+                "tool": tool,
+                "agent": agent,
+                "message": f"Unknown economy mode: {mode}",
+            }
+
+        if tool_info["protected"]:
+            if not approval_id:
+                return {
+                    "status": "approval_required",
+                    "tool": tool,
+                    "agent": agent,
+                    "mode": mode,
+                    "message": (
+                        "Creator approval is required before this "
+                        "protected action can execute."
+                    ),
+                }
+
+            validation = self.approvals.validate(
+                approval_id=approval_id,
+                agent=agent,
+                tool=tool,
+                parameters=parameters,
+            )
+
+            if not validation.get("valid"):
+                return {
+                    "status": "approval_invalid",
+                    "tool": tool,
                     "agent": agent,
                     "approval_id": approval_id,
                     "message": validation.get(
                         "message",
-                        "Approval validation failed.",
+                        "Approval is invalid.",
                     ),
                 }
 
-            consumed = (
-                self.approval_gate.consume(
-                    approval_id=approval_id,
-                    agent=agent,
-                    tool=tool_name,
-                    payload=kwargs,
-                )
+            consumed = self.approvals.consume(
+                approval_id=approval_id,
+                agent=agent,
+                tool=tool,
+                parameters=parameters,
             )
 
-            if not consumed.get(
-                "valid",
-                False,
-            ):
+            if not consumed.get("valid"):
                 return {
-                    "status": "blocked",
-                    "tool": tool_name,
+                    "status": "approval_invalid",
+                    "tool": tool,
                     "agent": agent,
                     "approval_id": approval_id,
                     "message": consumed.get(
@@ -336,283 +244,135 @@ class ToolRegistry:
                     ),
                 }
 
-        # -------------------------------------------------------------
-        # Execute
-        # -------------------------------------------------------------
-
         try:
-            result = tool["function"](
-                **kwargs
-            )
+            result = tool_info["handler"](**parameters)
 
-            if not isinstance(
-                result,
-                dict,
-            ):
-                result = {
-                    "status": "success",
-                    "result": result,
-                }
+            response = {
+                "status": "success",
+                "tool": tool,
+                "agent": agent,
+                "mode": mode,
+                "result": result,
+            }
 
-            result.setdefault(
-                "status",
-                "success",
-            )
-
-            result["tool"] = tool_name
-            result["agent"] = agent
-
-            if approval_id:
-                result["approval_id"] = (
-                    approval_id
-                )
-
-            self.memory.log(
-                "ToolRegistry",
-                (
-                    f"Executed tool '{tool_name}' "
-                    f"for agent '{agent}'."
-                ),
-            )
-
-            if approval_id:
-                self.approval_gate.mark_execution_result(
+            if tool_info["protected"] and approval_id:
+                self.approvals.mark_execution_result(
                     approval_id,
-                    result,
+                    response,
                 )
 
-            return result
+            return response
 
         except Exception as exc:
             error = {
                 "status": "error",
-                "tool": tool_name,
+                "tool": tool,
                 "agent": agent,
+                "mode": mode,
                 "message": str(exc),
             }
 
-            if approval_id:
-                error["approval_id"] = (
-                    approval_id
-                )
-
-                self.approval_gate.mark_execution_result(
+            if tool_info["protected"] and approval_id:
+                self.approvals.mark_execution_result(
                     approval_id,
                     error,
                 )
 
-            self.memory.log(
-                "ToolRegistry",
-                (
-                    f"Tool '{tool_name}' failed: "
-                    f"{exc}"
-                ),
-            )
-
             return error
 
-    # -----------------------------------------------------------------
-    # Public metadata
-    # -----------------------------------------------------------------
-
-    @staticmethod
     def _public_tool(
+        self,
         tool: Dict[str, Any],
     ) -> Dict[str, Any]:
         return {
             "name": tool["name"],
-            "description": tool[
-                "description"
-            ],
-            "simulation_safe": tool[
-                "simulation_safe"
-            ],
-            "live_capable": tool[
-                "live_capable"
-            ],
-            "protected": tool[
-                "protected"
-            ],
+            "description": tool["description"],
+            "simulation_safe": tool["simulation_safe"],
+            "live_capable": tool["live_capable"],
+            "protected": tool["protected"],
+            "category": tool["category"],
         }
 
-
-# ---------------------------------------------------------------------
-# Default tools
-# ---------------------------------------------------------------------
 
 def create_default_tools(
     memory,
+    world=None,
     economy=None,
     research=None,
 ) -> ToolRegistry:
+    """
+    Create the standard tool registry.
+
+    The arguments are intentionally compatible with main.py and allow
+    tools to share the same World, Economy, WebResearch, and memory
+    instances used by the rest of the application.
+    """
+
     registry = ToolRegistry(
         memory=memory,
+        world=world,
         economy=economy,
+        research=research,
     )
 
-    # ---------------------------------------------------------------
-    # Basic logging
-    # ---------------------------------------------------------------
-
-    def log_message(
-        message: str = "",
-        source: str = "Agent",
-    ):
-        message = (message or "").strip()
-
-        if not message:
-            return {
-                "status": "error",
-                "message": "Message is required.",
-            }
-
+    def log_tool(
+        message: str,
+        level: str = "info",
+    ) -> Dict[str, Any]:
         memory.log(
-            source,
-            message,
+            message=message,
+            level=level,
         )
 
         return {
-            "status": "success",
+            "logged": True,
+            "level": level,
             "message": message,
-            "source": source,
         }
 
-    registry.register(
-        name="log",
-        function=log_message,
-        description="Write a message to shared system memory.",
-        simulation_safe=True,
-        live_capable=True,
-        protected=False,
-    )
-
-    # ---------------------------------------------------------------
-    # Information farming
-    # ---------------------------------------------------------------
-
-    def farm_info(
-        topic: str = "",
-    ):
-        topic = (topic or "").strip()
-
-        if not topic:
-            return {
-                "status": "error",
-                "message": "Topic is required.",
-            }
-
+    def farm_info_tool(
+        topic: str,
+    ) -> Dict[str, Any]:
         if research is None:
             return {
                 "status": "error",
-                "message": "Research service unavailable.",
+                "message": "Research service is unavailable.",
             }
 
-        result = research.research_topic(
-            topic
-        )
+        return research.research_topic(topic)
 
-        return {
-            "status": "success",
-            "topic": topic,
-            "research": result,
-        }
-
-    registry.register(
-        name="farm_info",
-        function=farm_info,
-        description="Research a public information topic.",
-        simulation_safe=True,
-        live_capable=True,
-        protected=False,
-    )
-
-    # ---------------------------------------------------------------
-    # Balance
-    # ---------------------------------------------------------------
-
-    def check_balance():
+    def check_balance_tool() -> Dict[str, Any]:
         try:
             balance = memory.get_balance()
         except Exception:
             balance = 0.0
 
         return {
-            "status": "success",
             "balance": balance,
+            "currency": "SIM",
+            "mode": (
+                economy.get_mode()
+                if economy is not None
+                else "simulation"
+            ),
         }
 
-    registry.register(
-        name="check_balance",
-        function=check_balance,
-        description="Check the current simulated balance.",
-        simulation_safe=True,
-        live_capable=False,
-        protected=False,
-    )
-
-    # ---------------------------------------------------------------
-    # Tasks
-    # ---------------------------------------------------------------
-
-    def create_task(
-        agent: str = "",
+    def create_task_tool(
+        title: str,
         description: str = "",
         priority: str = "normal",
-    ):
-        agent = (agent or "").strip()
-        description = (
-            description or ""
-        ).strip()
+        agent: str = "system",
+    ) -> Dict[str, Any]:
+        task = memory.add_task(
+            title=title,
+            description=description,
+            priority=priority,
+            agent=agent,
+        )
 
-        if not agent:
-            return {
-                "status": "error",
-                "message": "Agent is required.",
-            }
+        return task
 
-        if not description:
-            return {
-                "status": "error",
-                "message": "Task description is required.",
-            }
-
-        try:
-            task_id = memory.add_task(
-                agent,
-                description,
-                priority=priority,
-            )
-        except TypeError:
-            task_id = memory.add_task(
-                {
-                    "agent": agent,
-                    "description": description,
-                    "priority": priority,
-                }
-            )
-
-        return {
-            "status": "success",
-            "task_id": task_id,
-            "agent": agent,
-            "description": description,
-            "priority": priority,
-        }
-
-    registry.register(
-        name="create_task",
-        function=create_task,
-        description="Create a task in shared memory.",
-        simulation_safe=True,
-        live_capable=True,
-        protected=False,
-    )
-
-    # ---------------------------------------------------------------
-    # Economy mode information
-    # ---------------------------------------------------------------
-
-    def money_mode():
+    def money_mode_tool() -> Dict[str, Any]:
         mode = (
             economy.get_mode()
             if economy is not None
@@ -620,183 +380,137 @@ def create_default_tools(
         )
 
         return {
-            "status": "success",
             "mode": mode,
-            "message": (
-                "Operating mode is controlled by "
-                "the Creator. Agents cannot change "
-                "the mode."
-            ),
+            "simulation": mode == "simulation",
+            "real": mode in {"real", "live"},
+            "creator_approval_required": True,
         }
 
-    registry.register(
-        name="money_mode",
-        function=money_mode,
-        description="Read the current economy operating mode.",
-        simulation_safe=True,
-        live_capable=True,
-        protected=False,
-    )
-
-    # ---------------------------------------------------------------
-    # Opportunities
-    # ---------------------------------------------------------------
-
-    def find_opportunity(
+    def find_opportunity_tool(
         category: str = "",
         budget: float = 0.0,
-    ):
+    ) -> Dict[str, Any]:
         if economy is None:
             return {
                 "status": "error",
-                "message": "Economy service unavailable.",
+                "message": "Economy service is unavailable.",
             }
 
-        return economy.create_opportunity(
-            category=category,
-            budget=budget,
+        opportunities = economy.list_opportunities(
+            category=category
         )
 
-    registry.register(
-        name="find_opportunity",
-        function=find_opportunity,
-        description="Generate a potential revenue opportunity.",
-        simulation_safe=True,
-        live_capable=True,
-        protected=False,
-    )
+        if not opportunities and hasattr(economy, "create_opportunity"):
+            created = economy.create_opportunity(
+                title=(
+                    f"Research opportunity: "
+                    f"{category or 'general'}"
+                ),
+                category=category or "general",
+                description=(
+                    "Automatically identified opportunity for "
+                    "further analysis."
+                ),
+                estimated_cost=budget,
+            )
 
-    def analyse_opportunity(
-        opportunity_id: str = "",
-    ):
+            opportunities = [created]
+
+        return {
+            "status": "success",
+            "category": category,
+            "budget": budget,
+            "opportunities": opportunities,
+        }
+
+    def analyse_opportunity_tool(
+        opportunity_id: str,
+    ) -> Dict[str, Any]:
         if economy is None:
             return {
                 "status": "error",
-                "message": "Economy service unavailable.",
+                "message": "Economy service is unavailable.",
             }
 
         return economy.analyse_opportunity(
             opportunity_id
         )
 
-    registry.register(
-        name="analyse_opportunity",
-        function=analyse_opportunity,
-        description="Analyse a revenue opportunity.",
-        simulation_safe=True,
-        live_capable=True,
-        protected=False,
-    )
-
-    def list_opportunities():
+    def list_opportunities_tool(
+        category: str = "",
+    ) -> Dict[str, Any]:
         if economy is None:
             return {
                 "status": "error",
-                "message": "Economy service unavailable.",
+                "message": "Economy service is unavailable.",
             }
 
-        return economy.list_opportunities()
+        return {
+            "status": "success",
+            "opportunities": economy.list_opportunities(
+                category=category
+            ),
+        }
 
-    registry.register(
-        name="list_opportunities",
-        function=list_opportunities,
-        description="List discovered revenue opportunities.",
-        simulation_safe=True,
-        live_capable=True,
-        protected=False,
-    )
-
-    # ---------------------------------------------------------------
-    # Experiments
-    # ---------------------------------------------------------------
-
-    def create_experiment(
-        opportunity_id: str = "",
+    def create_experiment_tool(
+        opportunity_id: str,
+        title: str = "",
+        description: str = "",
         budget: float = 0.0,
         duration_days: int = 7,
-    ):
+    ) -> Dict[str, Any]:
         if economy is None:
             return {
                 "status": "error",
-                "message": "Economy service unavailable.",
+                "message": "Economy service is unavailable.",
             }
 
         return economy.create_experiment(
             opportunity_id=opportunity_id,
+            title=title,
+            description=description,
             budget=budget,
             duration_days=duration_days,
         )
 
-    registry.register(
-        name="create_experiment",
-        function=create_experiment,
-        description=(
-            "Create a proposed revenue experiment. "
-            "Consequential execution requires Creator approval."
-        ),
-        simulation_safe=False,
-        live_capable=True,
-        protected=True,
-    )
-
-    def complete_experiment(
-        experiment_id: str = "",
+    def complete_experiment_tool(
+        experiment_id: str,
         result: str = "",
         revenue: float = 0.0,
-    ):
+        expenses: float = 0.0,
+        success: bool = False,
+    ) -> Dict[str, Any]:
         if economy is None:
             return {
                 "status": "error",
-                "message": "Economy service unavailable.",
+                "message": "Economy service is unavailable.",
             }
 
         return economy.complete_experiment(
             experiment_id=experiment_id,
             result=result,
             revenue=revenue,
+            expenses=expenses,
+            success=success,
         )
 
-    registry.register(
-        name="complete_experiment",
-        function=complete_experiment,
-        description=(
-            "Record completion of a revenue experiment."
-        ),
-        simulation_safe=False,
-        live_capable=True,
-        protected=True,
-    )
-
-    def economy_report():
+    def economy_report_tool() -> Dict[str, Any]:
         if economy is None:
             return {
                 "status": "error",
-                "message": "Economy service unavailable.",
+                "message": "Economy service is unavailable.",
             }
 
         return economy.get_economy_report()
 
-    registry.register(
-        name="economy_report",
-        function=economy_report,
-        description="Generate an economy report.",
-        simulation_safe=True,
-        live_capable=True,
-        protected=False,
-    )
-
-    # ---------------------------------------------------------------
-    # Web research
-    # ---------------------------------------------------------------
-
-    def web_search(
-        query: str = "",
+    def web_search_tool(
+        query: str,
         limit: int = 5,
-    ):
+    ) -> Dict[str, Any]:
         if research is None:
             return {
                 "status": "error",
-                "message": "Research service unavailable.",
+                "message": "Research service is unavailable.",
             }
 
         return research.search(
@@ -804,23 +518,14 @@ def create_default_tools(
             limit=limit,
         )
 
-    registry.register(
-        name="web_search",
-        function=web_search,
-        description="Search public web information.",
-        simulation_safe=True,
-        live_capable=True,
-        protected=False,
-    )
-
-    def read_webpage(
-        url: str = "",
+    def read_webpage_tool(
+        url: str,
         max_chars: int = 12000,
-    ):
+    ) -> Dict[str, Any]:
         if research is None:
             return {
                 "status": "error",
-                "message": "Research service unavailable.",
+                "message": "Research service is unavailable.",
             }
 
         return research.read_page(
@@ -829,12 +534,142 @@ def create_default_tools(
         )
 
     registry.register(
-        name="read_webpage",
-        function=read_webpage,
+        "log",
+        log_tool,
+        description="Write a message to shared system logs.",
+        simulation_safe=True,
+        live_capable=True,
+        protected=False,
+        category="system",
+    )
+
+    registry.register(
+        "farm_info",
+        farm_info_tool,
+        description="Research and store public information.",
+        simulation_safe=True,
+        live_capable=True,
+        protected=False,
+        category="research",
+    )
+
+    registry.register(
+        "check_balance",
+        check_balance_tool,
+        description="Read the current simulated economy balance.",
+        simulation_safe=True,
+        live_capable=True,
+        protected=False,
+        category="finance",
+    )
+
+    registry.register(
+        "create_task",
+        create_task_tool,
+        description="Create a task in shared memory.",
+        simulation_safe=True,
+        live_capable=True,
+        protected=False,
+        category="orchestration",
+    )
+
+    registry.register(
+        "money_mode",
+        money_mode_tool,
+        description="Read the current economy execution mode.",
+        simulation_safe=True,
+        live_capable=True,
+        protected=False,
+        category="finance",
+    )
+
+    registry.register(
+        "find_opportunity",
+        find_opportunity_tool,
+        description="Find or identify revenue opportunities.",
+        simulation_safe=True,
+        live_capable=True,
+        protected=False,
+        category="revenue",
+    )
+
+    registry.register(
+        "analyse_opportunity",
+        analyse_opportunity_tool,
+        description="Analyse a revenue opportunity.",
+        simulation_safe=True,
+        live_capable=True,
+        protected=False,
+        category="revenue",
+    )
+
+    registry.register(
+        "list_opportunities",
+        list_opportunities_tool,
+        description="List known revenue opportunities.",
+        simulation_safe=True,
+        live_capable=True,
+        protected=False,
+        category="revenue",
+    )
+
+    registry.register(
+        "create_experiment",
+        create_experiment_tool,
+        description=(
+            "Create a revenue experiment. Consequential execution "
+            "requires Creator approval."
+        ),
+        simulation_safe=False,
+        live_capable=True,
+        protected=True,
+        category="revenue",
+    )
+
+    registry.register(
+        "complete_experiment",
+        complete_experiment_tool,
+        description=(
+            "Complete a revenue experiment and record its outcome. "
+            "Consequential execution requires Creator approval."
+        ),
+        simulation_safe=False,
+        live_capable=True,
+        protected=True,
+        category="revenue",
+    )
+
+    registry.register(
+        "economy_report",
+        economy_report_tool,
+        description="Generate an economy report.",
+        simulation_safe=True,
+        live_capable=True,
+        protected=False,
+        category="finance",
+    )
+
+    registry.register(
+        "web_search",
+        web_search_tool,
+        description="Search public web information.",
+        simulation_safe=True,
+        live_capable=True,
+        protected=False,
+        category="research",
+    )
+
+    registry.register(
+        "read_webpage",
+        read_webpage_tool,
         description="Read a public webpage.",
         simulation_safe=True,
         live_capable=True,
         protected=False,
+        category="research",
     )
 
     return registry
+
+
+
