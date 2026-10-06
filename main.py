@@ -1,26 +1,48 @@
 """
 Agent Simulation
 ----------------
-Main FastAPI application.
+Application entry point.
+
+Creator
+   ↓
+BrainRouter
+   ↓
+AutonomousBrain
+   ↓
+Tools / Specialist Agents
+   ↓
+Observation / Memory
+   ↓
+Creator
+
+The legacy Boss command system remains available as a fallback, but
+natural-language Creator requests are routed through the brain first.
 """
 
-from pathlib import Path
-from typing import Any, Dict
-import json
+from __future__ import annotations
+
+import inspect
 import os
 import traceback
+from pathlib import Path
+from typing import Any, Dict
 
-from fastapi import FastAPI, Form, HTTPException, Request
+import uvicorn
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from core.memory import SharedMemory
 from core.world import World
 from core.economy import Economy
 from core.research import WebResearch
+from core.approvals import ApprovalGate
 from core.tools import create_default_tools
 from core.orchestrator import Orchestrator
-from core.approvals import ApprovalGate
+
+from core.agent_brain_manager import AgentBrainManager
+from core.brain_router import BrainRouter
 
 from agents.boss import Boss
 from agents.banker import Banker
@@ -28,29 +50,36 @@ from agents.info_farmer import InfoFarmer
 from agents.opportunity_agent import OpportunityAgent
 
 
-# ============================================================
-# APPLICATION
-# ============================================================
+# ---------------------------------------------------------------------
+# Application
+# ---------------------------------------------------------------------
 
 app = FastAPI(
-    title="Agent Simulation",
-    version="2.0.0",
+    title="Autonomous Agent Simulation",
+    version="0.3.0",
 )
 
-BASE_DIR = Path(__file__).resolve().parent
 
-TEMPLATES_DIR = (
-    BASE_DIR / "ui" / "templates"
-)
+BASE_DIR = Path(__file__).parent
+
+TEMPLATE_DIR = BASE_DIR / "ui" / "templates"
+STATIC_DIR = BASE_DIR / "ui" / "static"
+
+if STATIC_DIR.exists():
+    app.mount(
+        "/static",
+        StaticFiles(directory=STATIC_DIR),
+        name="static",
+    )
 
 templates = Jinja2Templates(
-    directory=str(TEMPLATES_DIR)
+    directory=TEMPLATE_DIR
 )
 
 
-# ============================================================
-# CORE SERVICES
-# ============================================================
+# ---------------------------------------------------------------------
+# Core systems
+# ---------------------------------------------------------------------
 
 memory = SharedMemory()
 
@@ -60,6 +89,8 @@ economy = Economy(memory)
 
 research = WebResearch(memory)
 
+approvals = ApprovalGate(memory)
+
 tools = create_default_tools(
     memory=memory,
     world=world,
@@ -67,12 +98,10 @@ tools = create_default_tools(
     research=research,
 )
 
-approvals = ApprovalGate(memory)
 
-
-# ============================================================
-# AGENTS
-# ============================================================
+# ---------------------------------------------------------------------
+# Agents
+# ---------------------------------------------------------------------
 
 boss = Boss(
     memory=memory,
@@ -96,7 +125,7 @@ opportunity_agent = OpportunityAgent(
 )
 
 
-agents = {
+agents: Dict[str, Any] = {
     "Boss": boss,
     "Banker": banker,
     "InfoFarmer": info_farmer,
@@ -104,20 +133,24 @@ agents = {
 }
 
 
-# ============================================================
-# CONNECT AGENTS TO BOSS
-# ============================================================
+# ---------------------------------------------------------------------
+# Register specialist agents with Boss
+# ---------------------------------------------------------------------
 
-# Boss is the Creator-facing coordinator.
-# Give Boss access to all specialist agents.
-boss.register_agents(
-    agents
-)
+try:
+    boss.register_agents(agents)
+except Exception:
+    try:
+        for name, agent in agents.items():
+            if name != "Boss":
+                boss.register_agent(agent)
+    except Exception:
+        pass
 
 
-# ============================================================
-# ORCHESTRATOR
-# ============================================================
+# ---------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------
 
 orchestrator = Orchestrator(
     memory=memory,
@@ -128,380 +161,487 @@ orchestrator = Orchestrator(
 )
 
 
-# ============================================================
-# HELPERS
-# ============================================================
+# ---------------------------------------------------------------------
+# Brain manager
+# ---------------------------------------------------------------------
+
+brain_manager = AgentBrainManager(
+    memory=memory,
+    world=world,
+    tools=tools,
+)
+
+
+# ---------------------------------------------------------------------
+# Brain router
+# ---------------------------------------------------------------------
+
+brain_router = None
+
+brain_initialisation: Dict[str, Any] = {}
+
+try:
+    brain_manager.attach_all(agents)
+
+    brain_router = BrainRouter(
+        brain_manager=brain_manager,
+        agents=agents,
+        boss=boss,
+        memory=memory,
+        tools=tools,
+        world=world,
+        economy=economy,
+    )
+
+    brain_initialisation = {
+        "status": "ready",
+        "brains": brain_manager.status(),
+    }
+
+except TypeError:
+    try:
+        brain_router = BrainRouter(
+            brain_manager=brain_manager,
+            agents=agents,
+        )
+
+        brain_initialisation = {
+            "status": "ready",
+            "brains": brain_manager.status(),
+        }
+
+    except Exception as exc:
+        brain_initialisation = {
+            "status": "error",
+            "error": str(exc),
+        }
+
+except Exception as exc:
+    brain_initialisation = {
+        "status": "error",
+        "error": str(exc),
+    }
+
+
+# ---------------------------------------------------------------------
+# Agent profiles
+# ---------------------------------------------------------------------
+
+SHEETS = {
+    "Boss": {
+        "role": "Coordinator",
+        "voice": "Understands the Creator objective and coordinates the system.",
+        "trait": "Delegates work and protects the approval boundary.",
+        "stats": {
+            "Perception": 8,
+            "Intelligence": 9,
+            "Charisma": 7,
+            "Endurance": 7,
+            "Luck": 5,
+        },
+    },
+    "Banker": {
+        "role": "Financial Analyst",
+        "voice": "Counts twice and challenges weak financial assumptions.",
+        "trait": "Guards the balance.",
+        "stats": {
+            "Perception": 7,
+            "Intelligence": 9,
+            "Charisma": 4,
+            "Endurance": 9,
+            "Luck": 4,
+        },
+    },
+    "InfoFarmer": {
+        "role": "Research Intelligence",
+        "voice": "Finds evidence and keeps useful information.",
+        "trait": "Hates losing a source.",
+        "stats": {
+            "Perception": 9,
+            "Intelligence": 9,
+            "Charisma": 4,
+            "Endurance": 6,
+            "Luck": 5,
+        },
+    },
+    "OpportunityAgent": {
+        "role": "Opportunity Scout",
+        "voice": "Looks for realistic opportunities and small tests.",
+        "trait": "Scores before suggesting.",
+        "stats": {
+            "Perception": 9,
+            "Intelligence": 8,
+            "Charisma": 5,
+            "Endurance": 6,
+            "Luck": 6,
+        },
+    },
+}
+
+
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
 
 def serialise(value: Any) -> Any:
+    """
+    Convert internal Python objects into JSON-safe values.
+    """
 
     if value is None:
         return None
 
-    if isinstance(
-        value,
-        (
-            str,
-            int,
-            float,
-            bool,
-        ),
-    ):
+    if isinstance(value, (str, int, float, bool)):
         return value
 
     if isinstance(value, dict):
-
         return {
             str(key): serialise(item)
             for key, item in value.items()
         }
 
-    if isinstance(
-        value,
-        (
-            list,
-            tuple,
-            set,
-        ),
-    ):
-
+    if isinstance(value, (list, tuple, set)):
         return [
             serialise(item)
             for item in value
         ]
 
-    if hasattr(
-        value,
-        "model_dump",
-    ):
-
+    if hasattr(value, "model_dump"):
         try:
-
-            return serialise(
-                value.model_dump()
-            )
-
+            return serialise(value.model_dump())
         except Exception:
             pass
 
-    if hasattr(
-        value,
-        "dict",
-    ):
-
+    if hasattr(value, "dict"):
         try:
-
-            return serialise(
-                value.dict()
-            )
-
+            return serialise(value.dict())
         except Exception:
             pass
 
-    if hasattr(
-        value,
-        "__dict__",
-    ):
-
+    if hasattr(value, "__dict__"):
         try:
-
-            return serialise(
-                vars(value)
-            )
-
+            return serialise(vars(value))
         except Exception:
             pass
 
     return str(value)
 
 
-def readable_response(
-    value: Any,
-) -> str:
+def normalise_response(result: Any) -> Any:
+    """
+    Make brain/router responses safe for FastAPI.
+    """
 
-    value = serialise(value)
+    return serialise(result)
 
-    if isinstance(
-        value,
-        str,
-    ):
-        return value
 
-    if isinstance(
-        value,
-        dict,
-    ):
+async def maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
 
-        for key in (
-            "response",
-            "message",
-            "text",
-            "output",
-            "content",
-        ):
-
-            item = value.get(key)
-
-            if isinstance(
-                item,
-                str,
-            ):
-                return item
-
-        if "result" in value:
-
-            return readable_response(
-                value["result"]
-            )
-
-        if "error" in value:
-
-            return (
-                f"ERROR: {value['error']}"
-            )
-
-        try:
-
-            return json.dumps(
-                value,
-                indent=2,
-                ensure_ascii=False,
-                default=str,
-            )
-
-        except Exception:
-
-            return str(value)
-
-    return str(value)
+    return value
 
 
 def current_mode() -> str:
-
     try:
-
         return economy.get_mode()
-
     except Exception:
-
-        try:
-
-            state = world.state
-
-            return state.get(
-                "economy_mode",
-                "simulation",
-            )
-
-        except Exception:
-
-            return "simulation"
+        return "simulation"
 
 
-def get_agent_status(
-    agent: Any,
-) -> Dict[str, Any]:
-
+def agent_status() -> Dict[str, Any]:
     try:
+        status = memory.get_all_agent_status()
 
-        return serialise(
-            agent.get_status_report()
-        )
+        if isinstance(status, dict):
+            return status
+    except Exception:
+        pass
 
-    except Exception as exc:
-
-        return {
-            "name": getattr(
-                agent,
-                "name",
-                "Unknown",
-            ),
-            "status": "error",
-            "error": str(exc),
-        }
-
-
-def all_agent_status() -> Dict[str, Any]:
-
-    result = {}
+    output = {}
 
     for name, agent in agents.items():
+        output[name] = {
+            "status": "registered",
+            "agent": name,
+            "brain_attached": bool(
+                getattr(agent, "brain", None)
+            ),
+        }
 
-        result[name] = get_agent_status(
-            agent
+    return output
+
+
+def knowledge_count() -> int:
+    try:
+        return len(
+            memory.data.get(
+                "knowledge",
+                [],
+            )
+        )
+    except Exception:
+        return 0
+
+
+def pending_approvals() -> list:
+    try:
+        return approvals.list_pending()
+    except Exception:
+        try:
+            return memory.data.get(
+                "approvals",
+                []
+            )
+        except Exception:
+            return []
+
+
+async def route_to_brain(command: str) -> Any:
+    """
+    Send arbitrary Creator language through the autonomous brain.
+
+    Several compatible BrainRouter APIs are supported so that the
+    application remains resilient while the brain subsystem evolves.
+    """
+
+    if brain_router is None:
+        raise RuntimeError(
+            "BrainRouter is not initialised."
         )
 
-    return result
+    methods = (
+        "route",
+        "process",
+        "handle",
+        "run",
+        "dispatch",
+        "route_command",
+    )
+
+    for method_name in methods:
+        method = getattr(
+            brain_router,
+            method_name,
+            None,
+        )
+
+        if not callable(method):
+            continue
+
+        attempts = [
+            lambda: method(command),
+            lambda: method(
+                command=command
+            ),
+            lambda: method(
+                request=command
+            ),
+            lambda: method(
+                objective=command
+            ),
+        ]
+
+        for attempt in attempts:
+            try:
+                result = attempt()
+                result = await maybe_await(result)
+
+                return result
+
+            except TypeError:
+                continue
+
+    raise RuntimeError(
+        "BrainRouter does not expose a compatible routing method."
+    )
 
 
-# ============================================================
-# STARTUP
-# ============================================================
+async def brain_command(command: str) -> Any:
+    """
+    Primary Creator command path.
+
+    Brain first.
+
+    Legacy Boss routing is only used if the brain subsystem is
+    unavailable, preventing a broken brain from taking down the UI.
+    """
+
+    try:
+        return await route_to_brain(command)
+
+    except Exception as brain_error:
+
+        # Record the failure but keep the system usable.
+        try:
+            memory.log(
+                message=(
+                    "Brain routing failed: "
+                    + str(brain_error)
+                ),
+                level="error",
+            )
+        except Exception:
+            pass
+
+        # Legacy fallback.
+        try:
+            if hasattr(boss, "process_order"):
+                result = boss.process_order(command)
+            else:
+                result = boss.process_command(command)
+
+            result = await maybe_await(result)
+
+            return {
+                "brain": {
+                    "status": "failed",
+                    "error": str(brain_error),
+                },
+                "fallback": {
+                    "status": "used",
+                },
+                "result": result,
+            }
+
+        except Exception as fallback_error:
+            raise RuntimeError(
+                "Both autonomous brain routing and "
+                "legacy Boss routing failed. "
+                f"Brain error: {brain_error}. "
+                f"Fallback error: {fallback_error}."
+            )
+
+
+# ---------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------
 
 @app.on_event("startup")
 async def startup_event():
+    """
+    Initialise and report the autonomous system.
+    """
 
     try:
+        boss.register_agents(agents)
+    except Exception:
+        pass
 
-        memory.log(
-            "System",
-            "Agent Simulation started.",
-        )
+    try:
+        brain_manager.attach_all(agents)
+    except Exception as exc:
+        brain_initialisation["attach_error"] = str(exc)
 
+    try:
         memory.log(
-            "System",
-            "Agents registered: "
-            + ", ".join(
-                agents.keys()
+            message=(
+                "Autonomous agent system initialised. "
+                f"Agents: {', '.join(agents.keys())}"
             ),
+            level="info",
         )
-
-        memory.log(
-            "System",
-            "Boss connected to specialist agents: "
-            + ", ".join(
-                boss.agents.keys()
-            ),
-        )
-
     except Exception:
         pass
 
 
-# ============================================================
-# DASHBOARD
-# ============================================================
+# ---------------------------------------------------------------------
+# Home
+# ---------------------------------------------------------------------
 
 @app.get(
     "/",
     response_class=HTMLResponse,
 )
-async def home(
-    request: Request,
-):
+async def home(request: Request):
 
-    try:
+    context = {
+        "request": request,
+        "world": world.get_summary(),
+        "agents": agent_status(),
+        "logs": memory.get_logs(30),
+        "balance": memory.get_balance("Banker"),
+        "knowledge_count": knowledge_count(),
+        "pending_tasks": memory.get_tasks(
+            status="pending"
+        ),
+        "economy": economy.get_economy_report(),
+    }
 
-        return templates.TemplateResponse(
-            "index.html",
-            {
-                "request": request,
-                "world": serialise(
-                    world.get_summary()
-                ),
-                "agents": all_agent_status(),
-                "logs": serialise(
-                    memory.get_logs(30)
-                ),
-                "balance": memory.get_balance(
-                    "Banker"
-                ),
-                "knowledge_count": len(
-                    memory.data.get(
-                        "knowledge",
-                        [],
-                    )
-                ),
-                "pending_tasks": serialise(
-                    memory.get_tasks(
-                        status="pending"
-                    )
-                ),
-                "economy": serialise(
-                    economy.get_economy_report()
-                ),
-            },
-        )
-
-    except Exception as exc:
-
-        return HTMLResponse(
-            "<h1>Dashboard Error</h1>"
-            f"<pre>{exc}</pre>",
-            status_code=500,
-        )
+    return templates.TemplateResponse(
+        "index.html",
+        context,
+    )
 
 
-# ============================================================
-# CREATOR COMMAND
-# ============================================================
+# ---------------------------------------------------------------------
+# Creator command
+# ---------------------------------------------------------------------
 
 @app.post("/command")
 async def send_command(
     command: str = Form(...),
 ):
 
-    command = (
-        command or ""
-    ).strip()
+    command = command.strip()
 
     if not command:
-
-        return JSONResponse({
-            "success": False,
-            "response": "Empty command.",
-        })
+        return JSONResponse(
+            {
+                "success": False,
+                "response": "Empty command.",
+            }
+        )
 
     try:
 
-        result = boss.process_order(
-            command
-        )
+        result = await brain_command(command)
 
-        result = serialise(
-            result
+        return JSONResponse(
+            {
+                "success": True,
+                "response": normalise_response(result),
+                "result": normalise_response(result),
+                "balance": memory.get_balance("Banker"),
+                "knowledge_count": knowledge_count(),
+                "economy_mode": current_mode(),
+                "brain": (
+                    brain_manager.status()
+                    if brain_manager
+                    else {}
+                ),
+            }
         )
-
-        response = readable_response(
-            result
-        )
-
-        return JSONResponse({
-            "success": True,
-            "response": response,
-            "result": result,
-            "balance": memory.get_balance(
-                "Banker"
-            ),
-            "knowledge_count": len(
-                memory.data.get(
-                    "knowledge",
-                    [],
-                )
-            ),
-            "economy_mode": current_mode(),
-        })
 
     except Exception as exc:
 
-        error_text = traceback.format_exc()
+        error = {
+            "status": "error",
+            "message": str(exc),
+            "command": command,
+        }
 
         try:
-
-            memory.log(
-                "System",
-                error_text,
-                level="error",
-            )
-
+            error["traceback"] = traceback.format_exc()
         except Exception:
             pass
 
         return JSONResponse(
             {
                 "success": False,
-                "response": (
-                    f"COMMAND ERROR: {exc}"
-                ),
-                "error": str(exc),
-                "traceback": error_text,
+                "response": error,
+                "result": error,
+                "balance": memory.get_balance("Banker"),
+                "knowledge_count": knowledge_count(),
+                "economy_mode": current_mode(),
             },
             status_code=500,
         )
 
 
-# ============================================================
-# HEALTH
-# ============================================================
+# ---------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------
 
 @app.get("/health")
 async def health():
@@ -509,519 +649,294 @@ async def health():
     return {
         "status": "ok",
         "service": "agent-simulation",
-        "agents": list(
-            agents.keys()
+        "brain": (
+            "ready"
+            if brain_router is not None
+            else "unavailable"
         ),
-        "boss_agents": list(
-            boss.agents.keys()
-        ),
+        "agents": list(agents.keys()),
         "mode": current_mode(),
     }
 
 
-# ============================================================
-# SYSTEM STATUS
-# ============================================================
+# ---------------------------------------------------------------------
+# System status
+# ---------------------------------------------------------------------
 
 @app.get("/api/status")
 async def api_status():
 
     return {
-        "status": "ok",
+        "success": True,
         "world": serialise(
             world.get_summary()
         ),
-        "agents": all_agent_status(),
+        "agents": serialise(
+            agent_status()
+        ),
         "agent_names": list(
             agents.keys()
         ),
         "boss_agents": list(
-            boss.agents.keys()
+            getattr(
+                boss,
+                "agents",
+                {}
+            ).keys()
         ),
         "balance": memory.get_balance(
             "Banker"
         ),
-        "knowledge_count": len(
-            memory.data.get(
-                "knowledge",
-                [],
-            )
-        ),
+        "knowledge_count": knowledge_count(),
         "pending_tasks": serialise(
             memory.get_tasks(
                 status="pending"
             )
         ),
         "logs": serialise(
-            memory.get_logs(30)
+            memory.get_logs(20)
         ),
         "economy": serialise(
             economy.get_economy_report()
         ),
-        "mode": current_mode(),
-        "orchestrator": serialise(
-            orchestrator.status()
+        "economy_mode": current_mode(),
+        "brain": serialise(
+            brain_manager.status()
+        ),
+        "brain_initialisation": serialise(
+            brain_initialisation
+        ),
+        "pending_approvals": serialise(
+            pending_approvals()
         ),
     }
 
 
-# ============================================================
-# AGENTS
-# ============================================================
+# ---------------------------------------------------------------------
+# Agents
+# ---------------------------------------------------------------------
 
 @app.get("/api/agents")
 async def api_agents():
 
+    result = {}
+
+    statuses = agent_status()
+
+    for name, agent in agents.items():
+
+        result[name] = {
+            "name": name,
+            "role": SHEETS.get(
+                name,
+                {}
+            ).get(
+                "role",
+                "Agent",
+            ),
+            "status": statuses.get(
+                name,
+                {
+                    "status": "registered"
+                },
+            ),
+            "brain_attached": (
+                name in brain_manager.brains
+            ),
+            "brain": serialise(
+                brain_manager.get_brain(name)
+            )
+            if name in brain_manager.brains
+            else None,
+        }
+
     return {
-        "count": len(agents),
-        "agents": all_agent_status(),
+        "success": True,
+        "agents": serialise(result),
+        "count": len(result),
     }
 
 
-@app.get("/api/agents/{name}")
-async def api_agent(
-    name: str,
+# ---------------------------------------------------------------------
+# Brain status
+# ---------------------------------------------------------------------
+
+@app.get("/api/brain")
+async def api_brain():
+
+    return {
+        "success": True,
+        "router_available": (
+            brain_router is not None
+        ),
+        "manager": serialise(
+            brain_manager.status()
+        ),
+        "initialisation": serialise(
+            brain_initialisation
+        ),
+    }
+
+
+# ---------------------------------------------------------------------
+# Brain command endpoint
+# ---------------------------------------------------------------------
+
+@app.post("/api/brain/command")
+async def api_brain_command(
+    command: str = Form(...),
 ):
 
-    agent = agents.get(
-        name
-    )
+    command = command.strip()
 
-    if agent is None:
-
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"Agent '{name}' not found."
-            ),
-        )
-
-    return get_agent_status(
-        agent
-    )
-
-
-@app.get(
-    "/api/agents/{name}/cognitive"
-)
-async def api_agent_cognitive(
-    name: str,
-):
-
-    agent = agents.get(
-        name
-    )
-
-    if agent is None:
-
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"Agent '{name}' not found."
-            ),
+    if not command:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "Empty command.",
+            },
+            status_code=400,
         )
 
     try:
 
-        return serialise(
-            agent.get_cognitive_state()
+        result = await route_to_brain(
+            command
         )
+
+        return {
+            "success": True,
+            "command": command,
+            "result": normalise_response(result),
+        }
 
     except Exception as exc:
 
-        raise HTTPException(
+        return JSONResponse(
+            {
+                "success": False,
+                "command": command,
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+            },
             status_code=500,
-            detail=str(exc),
         )
 
 
-# ============================================================
-# TOOLS
-# ============================================================
+# ---------------------------------------------------------------------
+# Brain reset
+# ---------------------------------------------------------------------
+
+@app.post("/api/brain/reset/{agent_name}")
+async def reset_agent_brain(
+    agent_name: str,
+):
+
+    if agent_name not in agents:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": (
+                    f"Unknown agent '{agent_name}'."
+                ),
+            },
+            status_code=404,
+        )
+
+    success = brain_manager.reset_brain(
+        agent_name
+    )
+
+    return {
+        "success": success,
+        "agent": agent_name,
+        "brain": serialise(
+            brain_manager.get_brain(
+                agent_name
+            )
+        ),
+    }
+
+
+# ---------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------
 
 @app.get("/api/tools")
 async def api_tools():
 
     try:
-
-        tool_list = tools.list_tools()
+        capabilities = tools.capabilities()
 
         return {
-            "count": len(tool_list),
+            "success": True,
             "tools": serialise(
-                tool_list
+                capabilities
             ),
         }
 
     except Exception as exc:
 
+        try:
+            tool_list = tools.list_tools()
+        except Exception:
+            tool_list = []
+
         return {
-            "count": 0,
-            "tools": [],
+            "success": True,
+            "tools": serialise(
+                tool_list
+            ),
             "error": str(exc),
         }
 
 
-# ============================================================
-# ORCHESTRATOR
-# ============================================================
-
-@app.get("/api/orchestrator")
-async def api_orchestrator():
-
-    return serialise(
-        orchestrator.status()
-    )
-
-
-@app.post(
-    "/api/orchestrator/start"
-)
-async def api_orchestrator_start():
-
-    try:
-
-        result = orchestrator.start()
-
-        return {
-            "success": True,
-            "result": serialise(
-                result
-            ),
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            {
-                "success": False,
-                "error": str(exc),
-            },
-            status_code=500,
-        )
-
-
-@app.post(
-    "/api/orchestrator/stop"
-)
-async def api_orchestrator_stop():
-
-    try:
-
-        result = orchestrator.stop()
-
-        return {
-            "success": True,
-            "result": serialise(
-                result
-            ),
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            {
-                "success": False,
-                "error": str(exc),
-            },
-            status_code=500,
-        )
-
-
-@app.post(
-    "/api/orchestrator/cycle"
-)
-async def api_orchestrator_cycle():
-
-    try:
-
-        result = orchestrator.run_cycle()
-
-        return {
-            "success": True,
-            "result": serialise(
-                result
-            ),
-        }
-
-    except Exception as exc:
-
-        error_text = traceback.format_exc()
-
-        try:
-
-            memory.log(
-                "System",
-                error_text,
-                level="error",
-            )
-
-        except Exception:
-            pass
-
-        return JSONResponse(
-            {
-                "success": False,
-                "error": str(exc),
-                "traceback": error_text,
-            },
-            status_code=500,
-        )
-
-
-@app.post(
-    "/api/orchestrator/task"
-)
-async def api_orchestrator_task(
-    agent: str = Form(...),
-    title: str = Form(...),
-    description: str = Form(""),
-    priority: str = Form("normal"),
-):
-
-    try:
-
-        result = orchestrator.assign_task(
-            agent_name=agent,
-            title=title,
-            description=description,
-            priority=priority,
-        )
-
-        return {
-            "success": True,
-            "result": serialise(
-                result
-            ),
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            {
-                "success": False,
-                "error": str(exc),
-                "traceback": traceback.format_exc(),
-            },
-            status_code=500,
-        )
-
-
-@app.post(
-    "/api/orchestrator/broadcast"
-)
-async def api_orchestrator_broadcast(
-    message: str = Form(...),
-    sender: str = Form("Creator"),
-):
-
-    try:
-
-        result = orchestrator.broadcast(
-            message=message,
-            sender=sender,
-        )
-
-        return {
-            "success": True,
-            "result": serialise(
-                result
-            ),
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            {
-                "success": False,
-                "error": str(exc),
-                "traceback": traceback.format_exc(),
-            },
-            status_code=500,
-        )
-
-
-# ============================================================
-# ECONOMY MODE
-# ============================================================
-
-@app.get("/api/mode")
-async def api_get_mode():
-
-    mode = current_mode()
-
-    return {
-        "mode": mode,
-        "simulation": (
-            mode == "simulation"
-        ),
-        "real": (
-            mode == "real"
-        ),
-    }
-
-
-@app.post("/api/mode")
-async def api_set_mode(
-    mode: str = Form(...),
-):
-
-    requested = (
-        mode or ""
-    ).strip().lower()
-
-    if requested == "live":
-        requested = "real"
-
-    if requested not in {
-        "simulation",
-        "real",
-    }:
-
-        return JSONResponse(
-            {
-                "success": False,
-                "error": (
-                    "Invalid mode. "
-                    "Use simulation or real."
-                ),
-            },
-            status_code=400,
-        )
-
-    if requested == "real":
-
-        return JSONResponse(
-            {
-                "success": False,
-                "error": (
-                    "Real mode requires "
-                    "Creator authentication "
-                    "and approval."
-                ),
-            },
-            status_code=403,
-        )
-
-    try:
-
-        result = economy.set_mode(
-            requested
-        )
-
-        return {
-            "success": True,
-            "mode": economy.get_mode(),
-            "result": serialise(
-                result
-            ),
-        }
-
-    except Exception as exc:
-
-        return JSONResponse(
-            {
-                "success": False,
-                "error": str(exc),
-                "traceback": traceback.format_exc(),
-            },
-            status_code=500,
-        )
-
-
-# ============================================================
-# APPROVAL QUEUE
-# ============================================================
+# ---------------------------------------------------------------------
+# Approvals
+# ---------------------------------------------------------------------
 
 @app.get("/api/approvals")
 async def api_approvals():
 
-    try:
-
-        pending = approvals.list_pending()
-
-        all_items = approvals.list_all()
-
-        return {
-            "success": True,
-            "pending": serialise(
-                pending
-            ),
-            "all": serialise(
-                all_items
-            ),
-            "count": len(pending),
-        }
-
-    except Exception as exc:
-
-        error_text = traceback.format_exc()
-
-        try:
-
-            memory.log(
-                "System",
-                error_text,
-                level="error",
+    return {
+        "success": True,
+        "pending": serialise(
+            pending_approvals()
+        ),
+        "all": serialise(
+            memory.data.get(
+                "approvals",
+                []
             )
-
-        except Exception:
-            pass
-
-        return JSONResponse(
-            {
-                "success": False,
-                "error": str(exc),
-                "pending": [],
-                "all": [],
-                "count": 0,
-            },
-            status_code=500,
-        )
+        ),
+    }
 
 
 @app.post(
     "/api/approvals/{approval_id}/approve"
 )
-async def approve_approval(
+async def approve_action(
     approval_id: str,
 ):
 
     try:
 
         result = approvals.decide(
-            approval_id,
-            approved=True,
-            decided_by="Creator",
+            approval_id=approval_id,
+            decision="approved",
         )
 
         return {
             "success": True,
-            "approval": serialise(
-                result
-            ),
+            "result": serialise(result),
         }
 
     except Exception as exc:
-
-        error_text = traceback.format_exc()
-
-        try:
-
-            memory.log(
-                "System",
-                error_text,
-                level="error",
-            )
-
-        except Exception:
-            pass
 
         return JSONResponse(
             {
                 "success": False,
                 "error": str(exc),
-                "traceback": error_text,
             },
             status_code=500,
         )
@@ -1030,74 +945,208 @@ async def approve_approval(
 @app.post(
     "/api/approvals/{approval_id}/deny"
 )
-async def deny_approval(
+async def deny_action(
     approval_id: str,
 ):
 
     try:
 
         result = approvals.decide(
-            approval_id,
-            approved=False,
-            decided_by="Creator",
+            approval_id=approval_id,
+            decision="denied",
         )
 
         return {
             "success": True,
-            "approval": serialise(
-                result
-            ),
+            "result": serialise(result),
         }
 
     except Exception as exc:
-
-        error_text = traceback.format_exc()
-
-        try:
-
-            memory.log(
-                "System",
-                error_text,
-                level="error",
-            )
-
-        except Exception:
-            pass
 
         return JSONResponse(
             {
                 "success": False,
                 "error": str(exc),
-                "traceback": error_text,
             },
             status_code=500,
         )
 
 
-# ============================================================
-# WORLD
-# ============================================================
+# ---------------------------------------------------------------------
+# Economy
+# ---------------------------------------------------------------------
+
+@app.get("/api/economy")
+async def api_economy():
+
+    return {
+        "success": True,
+        "mode": current_mode(),
+        "report": serialise(
+            economy.get_economy_report()
+        ),
+    }
+
+
+@app.post("/api/mode")
+async def set_mode(
+    mode: str = Form(...),
+):
+
+    mode = mode.strip().lower()
+
+    if mode not in {
+        "simulation",
+        "real",
+        "live",
+    }:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": (
+                    "Mode must be simulation, "
+                    "real, or live."
+                ),
+            },
+            status_code=400,
+        )
+
+    # The economy object controls the active mode.
+    setter = getattr(
+        economy,
+        "set_mode",
+        None,
+    )
+
+    if not callable(setter):
+        setter = getattr(
+            economy,
+            "change_mode",
+            None,
+        )
+
+    if callable(setter):
+        try:
+            result = setter(mode)
+
+            return {
+                "success": True,
+                "mode": current_mode(),
+                "result": serialise(result),
+            }
+
+        except Exception as exc:
+
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": str(exc),
+                },
+                status_code=500,
+            )
+
+    return JSONResponse(
+        {
+            "success": False,
+            "error": (
+                "Economy mode control is not "
+                "available in this build."
+            ),
+        },
+        status_code=501,
+    )
+
+
+# ---------------------------------------------------------------------
+# World
+# ---------------------------------------------------------------------
 
 @app.get("/api/world")
 async def api_world():
 
-    return serialise(
-        world.get_summary()
-    )
+    return {
+        "success": True,
+        "world": serialise(
+            world.get_summary()
+        ),
+    }
 
 
 @app.post("/api/advance_time")
 async def advance_time():
 
+    result = world.advance_time()
+
+    return {
+        "success": True,
+        "message": "Time advanced.",
+        "world": serialise(
+            result
+            if result is not None
+            else world.get_summary()
+        ),
+    }
+
+
+# ---------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------
+
+@app.get("/api/orchestrator")
+async def api_orchestrator():
+
+    try:
+        status = orchestrator.status()
+    except Exception as exc:
+        status = {
+            "status": "error",
+            "error": str(exc),
+        }
+
+    return {
+        "success": True,
+        "status": serialise(status),
+    }
+
+
+@app.post("/api/orchestrator/cycle")
+async def orchestrator_cycle():
+
     try:
 
-        result = world.advance_time()
+        method = getattr(
+            orchestrator,
+            "run_autonomous_cycle",
+            None,
+        )
+
+        if not callable(method):
+            method = getattr(
+                orchestrator,
+                "run_cycle",
+                None,
+            )
+
+        if not callable(method):
+            method = getattr(
+                orchestrator,
+                "run_once",
+                None,
+            )
+
+        if not callable(method):
+            raise RuntimeError(
+                "No orchestrator cycle method available."
+            )
+
+        result = method()
+
+        result = await maybe_await(
+            result
+        )
 
         return {
             "success": True,
-            "world": serialise(
-                world.get_summary()
-            ),
             "result": serialise(
                 result
             ),
@@ -1109,47 +1158,108 @@ async def advance_time():
             {
                 "success": False,
                 "error": str(exc),
+                "traceback": traceback.format_exc(),
             },
             status_code=500,
         )
 
 
-# ============================================================
-# ECONOMY
-# ============================================================
+# ---------------------------------------------------------------------
+# Agent pages
+# ---------------------------------------------------------------------
 
-@app.get("/api/economy")
-async def api_economy():
+@app.get(
+    "/agent/{name}",
+    response_class=HTMLResponse,
+)
+async def agent_page(
+    request: Request,
+    name: str,
+    archived: int = 0,
+):
 
-    return serialise(
-        economy.get_economy_report()
+    if name not in SHEETS:
+        return HTMLResponse(
+            "No such agent",
+            status_code=404,
+        )
+
+    statuses = agent_status()
+
+    status = statuses.get(
+        name,
+        {},
+    )
+
+    if isinstance(status, dict):
+        status = status.get(
+            "status",
+            "registered",
+        )
+
+    logs = []
+
+    try:
+        for item in memory.get_logs(40):
+
+            if item.get("agent") == name:
+                logs.append(
+                    item.get(
+                        "message",
+                        str(item),
+                    )
+                )
+    except Exception:
+        pass
+
+    notes = []
+
+    if name == "InfoFarmer":
+
+        try:
+            for i, item in enumerate(
+                memory.data.get(
+                    "knowledge",
+                    []
+                )
+            ):
+
+                if "id" not in item:
+                    item["id"] = i + 1
+
+                if (
+                    bool(archived)
+                    == bool(
+                        item.get(
+                            "archived",
+                            False,
+                        )
+                    )
+                ):
+                    notes.append(item)
+
+        except Exception:
+            pass
+
+    return templates.TemplateResponse(
+        "agent.html",
+        {
+            "request": request,
+            "name": name,
+            "sheet": SHEETS[name],
+            "status": status,
+            "logs": logs[:10],
+            "notes": notes,
+            "brain": (
+                brain_manager.get_brain(name)
+            ),
+        },
     )
 
 
-@app.get(
-    "/api/economy/vault"
-)
-async def api_economy_vault():
-
-    return {
-        "balance": memory.get_balance(
-            "Banker"
-        ),
-        "economy": serialise(
-            economy.get_economy_report()
-        ),
-        "transactions": serialise(
-            memory.data.get(
-                "transactions",
-                [],
-            )
-        ),
-    }
-
-
-# ============================================================
-# INFOFARMER NOTES
-# ============================================================
+# ---------------------------------------------------------------------
+# InfoFarmer note management
+# ---------------------------------------------------------------------
 
 @app.post(
     "/agent/InfoFarmer/note"
@@ -1176,7 +1286,6 @@ async def note_action(
             item.get("id") == note_id
             and action == "archive"
         ):
-
             item["archived"] = True
 
         kept.append(item)
@@ -1185,15 +1294,14 @@ async def note_action(
 
     memory.save()
 
-    return {
-        "success": True,
-        "message": "Note updated.",
-    }
+    return HTMLResponse(
+        "<script>location='/agent/InfoFarmer'</script>"
+    )
 
 
-# ============================================================
-# GLOBAL ERROR HANDLER
-# ============================================================
+# ---------------------------------------------------------------------
+# Error handler
+# ---------------------------------------------------------------------
 
 @app.exception_handler(Exception)
 async def global_exception_handler(
@@ -1201,41 +1309,24 @@ async def global_exception_handler(
     exc: Exception,
 ):
 
-    error_text = traceback.format_exc()
-
-    try:
-
-        memory.log(
-            "System",
-            (
-                f"Unhandled error on "
-                f"{request.url.path}\n"
-                f"{error_text}"
-            ),
-            level="error",
-        )
-
-    except Exception:
-        pass
-
     return JSONResponse(
         {
             "success": False,
             "error": str(exc),
-            "path": request.url.path,
-            "traceback": error_text,
+            "path": str(
+                request.url.path
+            ),
+            "traceback": traceback.format_exc(),
         },
         status_code=500,
     )
 
 
-# ============================================================
-# LOCAL RUNNER
-# ============================================================
+# ---------------------------------------------------------------------
+# Local execution
+# ---------------------------------------------------------------------
 
 if __name__ == "__main__":
-
-    import uvicorn
 
     port = int(
         os.environ.get(
