@@ -213,6 +213,11 @@
             background: #122412;
         }
 
+        button:disabled {
+            opacity: 0.5;
+            cursor: wait;
+        }
+
         button.danger {
             color: var(--danger);
             border-color: #633;
@@ -340,6 +345,13 @@
             color: var(--danger);
         }
 
+        .network-status {
+            margin-top: 10px;
+            color: var(--muted);
+            font-size: 11px;
+            white-space: pre-wrap;
+        }
+
         @media (max-width: 900px) {
             .grid {
                 grid-template-columns: 1fr;
@@ -424,7 +436,10 @@
                         placeholder="Enter command..."
                     >
 
-                    <button onclick="sendCommand()">
+                    <button
+                        id="execute-button"
+                        onclick="sendCommand()"
+                    >
                         Execute
                     </button>
                 </div>
@@ -434,6 +449,11 @@
                 <div class="output" id="command-output">
                     SYSTEM READY.
                 </div>
+
+                <div
+                    class="network-status"
+                    id="network-status"
+                ></div>
             </section>
 
             <section class="panel">
@@ -617,44 +637,160 @@ function escapeHtml(value) {
         .replaceAll("'", "&#039;");
 }
 
-async function api(url, options = {}) {
-    const response = await fetch(url, options);
-
-    const text = await response.text();
-
-    let data;
-
+function formatJson(value) {
     try {
-        data = JSON.parse(text);
+        return JSON.stringify(value, null, 2);
     } catch {
-        data = {
-            status: response.ok ? "success" : "error",
-            raw: text
-        };
+        return String(value);
     }
-
-    if (!response.ok) {
-        throw new Error(
-            data.message ||
-            data.detail ||
-            data.raw ||
-            `HTTP ${response.status}`
-        );
-    }
-
-    return data;
 }
 
-function formatJson(value) {
-    return JSON.stringify(value, null, 2);
+function setNetworkStatus(message) {
+    const element = $("network-status");
+
+    if (element) {
+        element.textContent = message || "";
+    }
+}
+
+async function api(url, options = {}) {
+    const timeoutMs =
+        Number(options.timeoutMs) > 0
+            ? Number(options.timeoutMs)
+            : 30000;
+
+    const controller =
+        new AbortController();
+
+    const timeoutId =
+        setTimeout(
+            () => controller.abort(),
+            timeoutMs
+        );
+
+    const requestOptions = {
+        ...options,
+        signal: controller.signal,
+        credentials: "same-origin",
+        cache: "no-store"
+    };
+
+    delete requestOptions.timeoutMs;
+
+    const started =
+        Date.now();
+
+    const absoluteUrl =
+        new URL(
+            url,
+            window.location.href
+        ).href;
+
+    try {
+        let response;
+
+        try {
+            response =
+                await fetch(
+                    absoluteUrl,
+                    requestOptions
+                );
+        } catch (error) {
+            const elapsed =
+                Date.now() - started;
+
+            if (
+                error &&
+                error.name === "AbortError"
+            ) {
+                throw new Error(
+                    `REQUEST TIMEOUT after ${timeoutMs}ms.\n` +
+                    `URL: ${absoluteUrl}\n` +
+                    `Elapsed: ${elapsed}ms`
+                );
+            }
+
+            const name =
+                error &&
+                error.name
+                    ? error.name
+                    : "UnknownError";
+
+            const message =
+                error &&
+                error.message
+                    ? error.message
+                    : String(error);
+
+            throw new Error(
+                `NETWORK ERROR.\n` +
+                `Type: ${name}\n` +
+                `Message: ${message}\n` +
+                `URL: ${absoluteUrl}\n` +
+                `Elapsed: ${elapsed}ms\n` +
+                `Browser online: ${navigator.onLine}\n` +
+                `Page: ${window.location.href}`
+            );
+        }
+
+        const elapsed =
+            Date.now() - started;
+
+        const text =
+            await response.text();
+
+        let data;
+
+        try {
+            data =
+                text
+                    ? JSON.parse(text)
+                    : {};
+        } catch {
+            data = {
+                status:
+                    response.ok
+                        ? "success"
+                        : "error",
+                raw: text
+            };
+        }
+
+        if (!response.ok) {
+            throw new Error(
+                `HTTP ${response.status} ` +
+                `${response.statusText}\n` +
+                `URL: ${absoluteUrl}\n` +
+                `Elapsed: ${elapsed}ms\n` +
+                `Response: ` +
+                (
+                    data.message ||
+                    data.detail ||
+                    data.raw ||
+                    "No response details"
+                )
+            );
+        }
+
+        return data;
+
+    } finally {
+        clearTimeout(timeoutId);
+    }
 }
 
 async function refreshStatus() {
     try {
-        const data = await api("/api/status");
+        const data =
+            await api(
+                "/api/status"
+            );
 
-        const world = data.world || {};
-        const resources = world.resources || {};
+        const world =
+            data.world || {};
+
+        const resources =
+            world.resources || {};
 
         $("mode").textContent =
             String(
@@ -667,7 +803,9 @@ async function refreshStatus() {
             world.day ?? "-";
 
         $("time").textContent =
-            world.time || world.time_of_day || "-";
+            world.time ||
+            world.time_of_day ||
+            "-";
 
         $("balance").textContent =
             resources.money ??
@@ -675,15 +813,19 @@ async function refreshStatus() {
             0;
 
         $("info-points").textContent =
-            resources.info_points ?? 0;
+            resources.info_points ??
+            0;
 
         $("reputation").textContent =
-            resources.reputation ?? 0;
+            resources.reputation ??
+            0;
 
-        $("agent-count").textContent =
+        if (
             Array.isArray(data.agents)
-                ? data.agents.length
-                : "-";
+        ) {
+            $("agent-count").textContent =
+                data.agents.length;
+        }
 
         updateModeButtons(
             data.mode ||
@@ -696,7 +838,7 @@ async function refreshStatus() {
 
     } catch (error) {
         $("system-output").textContent =
-            `STATUS ERROR: ${error.message}`;
+            `STATUS ERROR:\n\n${error.message}`;
     }
 }
 
@@ -721,7 +863,10 @@ function updateModeButtons(mode) {
 
 async function loadAgents() {
     try {
-        const data = await api("/api/agents");
+        const data =
+            await api(
+                "/api/agents"
+            );
 
         const agents =
             Array.isArray(data)
@@ -737,68 +882,75 @@ async function loadAgents() {
         if (!agents.length) {
             $("agents").innerHTML =
                 '<div class="empty">No agents registered.</div>';
+
             return;
         }
 
         $("agents").innerHTML =
-            agents.map(agent => {
-                const name =
-                    agent.name ||
-                    "Unknown";
+            agents.map(
+                agent => {
+                    const name =
+                        agent.name ||
+                        "Unknown";
 
-                const role =
-                    agent.role ||
-                    "Unknown role";
+                    const role =
+                        agent.role ||
+                        "Unknown role";
 
-                const status =
-                    agent.status ||
-                    "idle";
+                    const status =
+                        agent.status ||
+                        "idle";
 
-                const task =
-                    agent.current_task ||
-                    agent.objective ||
-                    "No active task";
+                    const task =
+                        agent.current_task ||
+                        agent.objective ||
+                        "No active task";
 
-                return `
-                    <div class="agent">
-                        <div class="agent-name">
-                            ${escapeHtml(name)}
+                    return `
+                        <div class="agent">
+                            <div class="agent-name">
+                                ${escapeHtml(name)}
+                            </div>
+
+                            <div class="agent-role">
+                                ${escapeHtml(role)}
+                            </div>
+
+                            <div class="agent-status">
+                                STATUS:
+                                <span class="${
+                                    status === "error"
+                                        ? "offline"
+                                        : "online"
+                                }">
+                                    ${escapeHtml(status)}
+                                </span>
+                            </div>
+
+                            <div class="approval-meta">
+                                TASK:
+                                ${escapeHtml(task)}
+                            </div>
                         </div>
-
-                        <div class="agent-role">
-                            ${escapeHtml(role)}
-                        </div>
-
-                        <div class="agent-status">
-                            STATUS:
-                            <span class="${
-                                status === "error"
-                                    ? "offline"
-                                    : "online"
-                            }">
-                                ${escapeHtml(status)}
-                            </span>
-                        </div>
-
-                        <div class="approval-meta">
-                            TASK:
-                            ${escapeHtml(task)}
-                        </div>
-                    </div>
-                `;
-            }).join("");
+                    `;
+                }
+            ).join("");
 
     } catch (error) {
         $("agents").innerHTML =
             `<div class="error">
-                AGENT ERROR: ${escapeHtml(error.message)}
+                AGENT ERROR:
+                ${escapeHtml(error.message)}
             </div>`;
     }
 }
 
 async function loadApprovals() {
     try {
-        const data = await api("/api/approvals");
+        const data =
+            await api(
+                "/api/approvals"
+            );
 
         const approvals =
             Array.isArray(data)
@@ -812,138 +964,156 @@ async function loadApprovals() {
         $("approval-count").textContent =
             approvals.filter(
                 item =>
-                    String(item.status || "pending")
-                        .toLowerCase() === "pending"
+                    String(
+                        item.status ||
+                        "pending"
+                    ).toLowerCase() ===
+                    "pending"
             ).length;
 
         if (!approvals.length) {
             $("approvals").innerHTML =
                 '<div class="empty">No pending approvals.</div>';
+
             return;
         }
 
         $("approvals").innerHTML =
-            approvals.map(item => {
-                const id =
-                    item.id ||
-                    item.approval_id ||
-                    "";
+            approvals.map(
+                item => {
+                    const id =
+                        item.id ||
+                        item.approval_id ||
+                        "";
 
-                const status =
-                    item.status ||
-                    "pending";
+                    const status =
+                        item.status ||
+                        "pending";
 
-                const risk =
-                    item.risk ||
-                    "unknown";
+                    const risk =
+                        item.risk ||
+                        "unknown";
 
-                const agent =
-                    item.agent ||
-                    "unknown";
+                    const agent =
+                        item.agent ||
+                        "unknown";
 
-                const action =
-                    item.action ||
-                    item.tool ||
-                    "unknown";
+                    const action =
+                        item.action ||
+                        item.tool ||
+                        "unknown";
 
-                const description =
-                    item.description ||
-                    item.reason ||
-                    "";
+                    const description =
+                        item.description ||
+                        item.reason ||
+                        "";
 
-                const plan =
-                    item.plan ||
-                    "";
+                    const plan =
+                        item.plan ||
+                        "";
 
-                const parameters =
-                    item.parameters ||
-                    item.payload ||
-                    {};
+                    const parameters =
+                        item.parameters ||
+                        item.payload ||
+                        {};
 
-                const pending =
-                    String(status).toLowerCase() ===
-                    "pending";
+                    const pending =
+                        String(status)
+                            .toLowerCase() ===
+                        "pending";
 
-                return `
-                    <div class="approval ${
-                        pending ? "pending" : ""
-                    }">
-                        <div class="approval-title">
-                            ${escapeHtml(action)}
-                        </div>
-
-                        <div class="approval-meta">
-                            ID:
-                            ${escapeHtml(id)}
-                            <br>
-                            AGENT:
-                            ${escapeHtml(agent)}
-                            <br>
-                            RISK:
-                            ${escapeHtml(risk)}
-                            <br>
-                            STATUS:
-                            ${escapeHtml(status)}
-                        </div>
-
-                        <div style="margin-top: 7px;">
-                            ${escapeHtml(description)}
-                        </div>
-
-                        ${
-                            plan
-                                ? `
-                                    <div class="approval-plan">
-                                        PLAN:
-                                        ${escapeHtml(
-                                            typeof plan === "string"
-                                                ? plan
-                                                : formatJson(plan)
-                                        )}
-                                    </div>
-                                `
-                                : ""
-                        }
-
-                        <div
-                            class="approval-plan"
-                            style="color: var(--muted);"
-                        >
-                            PARAMETERS:
-                            ${escapeHtml(
-                                formatJson(parameters)
-                            )}
-                        </div>
-
-                        ${
+                    return `
+                        <div class="approval ${
                             pending
-                                ? `
-                                    <div class="approval-actions">
-                                        <button
-                                            onclick="decideApproval(
-                                                '${escapeHtml(id)}',
-                                                'approve'
-                                            )"
-                                        >
-                                            Approve
-                                        </button>
-
-                                        <button
-                                            class="danger"
-                                            onclick="decideApproval(
-                                                '${escapeHtml(id)}',
-                                                'deny'
-                                            )"
-                                        >
-                                            Deny
-                                        </button>
-                                    </div>
-                                `
+                                ? "pending"
                                 : ""
-                        }
-                    </div>
-                `;
-            }).join("");
+                        }">
+
+                            <div class="approval-title">
+                                ${escapeHtml(action)}
+                            </div>
+
+                            <div class="approval-meta">
+                                ID:
+                                ${escapeHtml(id)}
+                                <br>
+
+                                AGENT:
+                                ${escapeHtml(agent)}
+                                <br>
+
+                                RISK:
+                                ${escapeHtml(risk)}
+                                <br>
+
+                                STATUS:
+                                ${escapeHtml(status)}
+                            </div>
+
+                            <div
+                                style="margin-top: 7px;"
+                            >
+                                ${escapeHtml(description)}
+                            </div>
+
+                            ${
+                                plan
+                                    ? `
+                                        <div class="approval-plan">
+                                            PLAN:
+                                            ${escapeHtml(
+                                                typeof plan === "string"
+                                                    ? plan
+                                                    : formatJson(plan)
+                                            )}
+                                        </div>
+                                    `
+                                    : ""
+                            }
+
+                            <div
+                                class="approval-plan"
+                                style="color: var(--muted);"
+                            >
+                                PARAMETERS:
+                                ${escapeHtml(
+                                    formatJson(parameters)
+                                )}
+                            </div>
+
+                            ${
+                                pending
+                                    ? `
+                                        <div class="approval-actions">
+
+                                            <button
+                                                onclick="decideApproval(
+                                                    '${escapeHtml(id)}',
+                                                    'approve'
+                                                )"
+                                            >
+                                                Approve
+                                            </button>
+
+                                            <button
+                                                class="danger"
+                                                onclick="decideApproval(
+                                                    '${escapeHtml(id)}',
+                                                    'deny'
+                                                )"
+                                            >
+                                                Deny
+                                            </button>
+
+                                        </div>
+                                    `
+                                    : ""
+                            }
+
+                        </div>
+                    `;
+                }
+            ).join("");
 
     } catch (error) {
         $("approvals").innerHTML =
@@ -954,7 +1124,10 @@ async function loadApprovals() {
     }
 }
 
-async function decideApproval(id, decision) {
+async function decideApproval(
+    id,
+    decision
+) {
     const reason =
         window.prompt(
             decision === "approve"
@@ -971,19 +1144,25 @@ async function decideApproval(id, decision) {
         const body =
             new URLSearchParams();
 
-        body.set("reason", reason);
-
-        const data = await api(
-            `/api/approvals/${encodeURIComponent(id)}/${decision}`,
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type":
-                        "application/x-www-form-urlencoded"
-                },
-                body
-            }
+        body.set(
+            "reason",
+            reason
         );
+
+        const data =
+            await api(
+                `/api/approvals/${encodeURIComponent(id)}/${decision}`,
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/x-www-form-urlencoded"
+                    },
+
+                    body
+                }
+            );
 
         $("system-output").textContent =
             formatJson(data);
@@ -992,11 +1171,13 @@ async function decideApproval(id, decision) {
 
     } catch (error) {
         $("system-output").textContent =
-            `APPROVAL ERROR: ${error.message}`;
+            `APPROVAL ERROR:\n\n${error.message}`;
     }
 }
 
-async function setOperatingMode(mode) {
+async function setOperatingMode(
+    mode
+) {
     const target =
         mode === "live"
             ? "live"
@@ -1019,19 +1200,25 @@ async function setOperatingMode(mode) {
         const body =
             new URLSearchParams();
 
-        body.set("mode", target);
-
-        const data = await api(
-            "/api/mode",
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type":
-                        "application/x-www-form-urlencoded"
-                },
-                body
-            }
+        body.set(
+            "mode",
+            target
         );
+
+        const data =
+            await api(
+                "/api/mode",
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/x-www-form-urlencoded"
+                    },
+
+                    body
+                }
+            );
 
         $("system-output").textContent =
             formatJson(data);
@@ -1041,40 +1228,94 @@ async function setOperatingMode(mode) {
 
     } catch (error) {
         $("system-output").textContent =
-            `MODE ERROR: ${error.message}`;
+            `MODE ERROR:\n\n${error.message}`;
     }
 }
 
 async function sendCommand() {
-    const input = $("command");
-    const command = input.value.trim();
+    const input =
+        $("command");
+
+    const output =
+        $("command-output");
+
+    const button =
+        $("execute-button");
+
+    const command =
+        input.value.trim();
 
     if (!command) {
+        output.textContent =
+            "COMMAND ERROR:\n\nEnter a command first.";
+
         return;
     }
 
-    input.value = "";
+    const started =
+        Date.now();
+
+    const endpoint =
+        new URL(
+            "/command",
+            window.location.href
+        ).href;
+
+    button.disabled = true;
+    button.textContent = "RUNNING...";
+
+    output.textContent =
+        "SENDING COMMAND...\n\n" +
+        "Connecting to application server...\n\n" +
+        `Endpoint: ${endpoint}\n` +
+        `Browser online: ${navigator.onLine}\n` +
+        `Started: ${new Date().toISOString()}`;
+
+    setNetworkStatus(
+        "COMMAND REQUEST ACTIVE..."
+    );
 
     try {
         const body =
             new URLSearchParams();
 
-        body.set("command", command);
-
-        const data = await api(
-            "/command",
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type":
-                        "application/x-www-form-urlencoded"
-                },
-                body
-            }
+        body.set(
+            "command",
+            command
         );
 
-        $("command-output").textContent =
-            formatJson(data);
+        const data =
+            await api(
+                "/command",
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/x-www-form-urlencoded"
+                    },
+
+                    body,
+
+                    timeoutMs: 300000
+                }
+            );
+
+        const elapsed =
+            Date.now() - started;
+
+        output.textContent =
+            formatJson(data) +
+            "\n\n" +
+            `REQUEST COMPLETED IN ${elapsed}ms`;
+
+        setNetworkStatus(
+            `COMMAND SUCCESS\n` +
+            `HTTP request completed in ${elapsed}ms\n` +
+            `Endpoint: ${endpoint}`
+        );
+
+        input.value = "";
 
         await refreshStatus();
         await loadAgents();
@@ -1082,19 +1323,38 @@ async function sendCommand() {
         await loadLogs();
 
     } catch (error) {
-        $("command-output").textContent =
-            `COMMAND ERROR: ${error.message}`;
+        const elapsed =
+            Date.now() - started;
+
+        output.textContent =
+            "COMMAND ERROR\n\n" +
+            `${error.message}\n\n` +
+            `Elapsed: ${elapsed}ms\n` +
+            `Endpoint: ${endpoint}\n` +
+            `Browser online: ${navigator.onLine}\n` +
+            `Page: ${window.location.href}\n` +
+            `Time: ${new Date().toISOString()}`;
+
+        setNetworkStatus(
+            "COMMAND REQUEST FAILED.\n" +
+            "The diagnostic information above is intentional."
+        );
+
+    } finally {
+        button.disabled = false;
+        button.textContent = "EXECUTE";
     }
 }
 
 async function advanceTime() {
     try {
-        const data = await api(
-            "/api/advance_time",
-            {
-                method: "POST"
-            }
-        );
+        const data =
+            await api(
+                "/api/advance_time",
+                {
+                    method: "POST"
+                }
+            );
 
         $("system-output").textContent =
             formatJson(data);
@@ -1104,61 +1364,76 @@ async function advanceTime() {
 
     } catch (error) {
         $("system-output").textContent =
-            `TIME ERROR: ${error.message}`;
+            `TIME ERROR:\n\n${error.message}`;
     }
 }
 
 async function loadLogs() {
     try {
-        const data = await api(
-            "/api/status"
-        );
+        const data =
+            await api(
+                "/api/status"
+            );
 
         const logs =
             data.logs ||
             data.runtime_logs ||
             [];
 
-        if (!Array.isArray(logs) || !logs.length) {
+        if (
+            !Array.isArray(logs) ||
+            !logs.length
+        ) {
             $("logs").innerHTML =
                 '<div class="empty">No runtime logs.</div>';
+
             return;
         }
 
         $("logs").innerHTML =
-            logs.slice(-80).reverse().map(log => {
-                if (typeof log === "string") {
-                    return `
-                        <div class="log-line">
-                            ${escapeHtml(log)}
-                        </div>
-                    `;
-                }
+            logs
+                .slice(-80)
+                .reverse()
+                .map(
+                    log => {
+                        if (
+                            typeof log === "string"
+                        ) {
+                            return `
+                                <div class="log-line">
+                                    ${escapeHtml(log)}
+                                </div>
+                            `;
+                        }
 
-                const timestamp =
-                    log.timestamp ||
-                    "";
+                        const timestamp =
+                            log.timestamp ||
+                            "";
 
-                const source =
-                    log.source ||
-                    log.agent ||
-                    "SYSTEM";
+                        const source =
+                            log.source ||
+                            log.agent ||
+                            "SYSTEM";
 
-                const message =
-                    log.message ||
-                    log.text ||
-                    "";
+                        const message =
+                            log.message ||
+                            log.text ||
+                            "";
 
-                return `
-                    <div class="log-line">
-                        <strong>
-                            ${escapeHtml(timestamp)}
-                        </strong>
-                        [${escapeHtml(source)}]
-                        ${escapeHtml(message)}
-                    </div>
-                `;
-            }).join("");
+                        return `
+                            <div class="log-line">
+                                <strong>
+                                    ${escapeHtml(timestamp)}
+                                </strong>
+
+                                [${escapeHtml(source)}]
+
+                                ${escapeHtml(message)}
+                            </div>
+                        `;
+                    }
+                )
+                .join("");
 
     } catch {
         $("logs").innerHTML =
@@ -1172,6 +1447,24 @@ $("command").addEventListener(
         if (event.key === "Enter") {
             sendCommand();
         }
+    }
+);
+
+window.addEventListener(
+    "online",
+    () => {
+        setNetworkStatus(
+            "BROWSER NETWORK STATUS: ONLINE"
+        );
+    }
+);
+
+window.addEventListener(
+    "offline",
+    () => {
+        setNetworkStatus(
+            "BROWSER NETWORK STATUS: OFFLINE"
+        );
     }
 );
 
