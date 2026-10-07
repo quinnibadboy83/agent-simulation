@@ -13,7 +13,7 @@ class AutonomousBrain:
     """
     LLM-driven autonomous reasoning engine.
 
-    The brain is intentionally separate from the agent itself.
+    The brain is separate from the agent.
 
     The agent provides:
         identity
@@ -161,6 +161,16 @@ class AutonomousBrain:
             },
         ]
 
+        # --------------------------------------------------------------
+        # Autonomous reasoning loop.
+        #
+        # The model may still use tools and perform multiple steps.
+        # However, every individual LLM call is expected to return a
+        # useful decision rather than unlimited internal reasoning.
+        # This is important when the model is reached through a
+        # Cloudflare proxy with a 120-second response limit.
+        # --------------------------------------------------------------
+
         for step in range(
             self.config.max_reasoning_steps
         ):
@@ -216,13 +226,24 @@ class AutonomousBrain:
             )
 
             # ----------------------------------------------------------
-            # Model has finished reasoning and produced an answer.
+            # No tool call means the model has produced its answer.
             # ----------------------------------------------------------
 
             if not tool_calls:
                 final_text = self.llm.extract_text(
                     response
                 )
+
+                # Some reasoning models can return an empty visible
+                # content field if their generation budget is exhausted.
+                # Preserve useful reasoning text if available rather
+                # than returning an apparently blank successful answer.
+                if not final_text:
+                    final_text = (
+                        self._extract_reasoning_text(
+                            response
+                        )
+                    )
 
                 self.state = "complete"
 
@@ -418,12 +439,12 @@ You are the autonomous AI brain of:
 
 You are NOT a scripted command parser.
 
-Your purpose is to understand the Creator's natural-language
-objective and autonomously determine how best to accomplish it.
+Understand natural-language objectives and determine the best
+permitted way to accomplish them.
 
 You have access to tools and persistent cognitive memory.
 
-Your reasoning loop is:
+REASONING LOOP
 
 PERCEIVE
 → UNDERSTAND
@@ -434,22 +455,27 @@ PERCEIVE
 → OBSERVE RESULT
 → REASON AGAIN
 
-You may perform multiple reasoning/tool steps when necessary.
+You may perform multiple tool/reasoning steps when necessary.
 
-Do not stop simply because one tool returned information.
-Determine whether the objective has actually been satisfied.
+IMPORTANT RESPONSE RULE
 
-If information is missing, research it.
+Be efficient.
 
-If a specialist or tool is appropriate, use it.
+Do not spend excessive time generating internal reasoning.
 
-If a result is incomplete, continue investigating.
+For a simple request, answer immediately.
 
-If evidence contradicts an earlier assumption, revise your plan.
+When a tool is necessary, select the appropriate tool and use it.
 
-Never fabricate information.
+After receiving a tool result, determine whether the objective is
+satisfied. If it is satisfied, provide the answer. If more work is
+required, continue.
 
-Never fabricate tool results.
+Keep the visible final answer concise and useful.
+
+Do not fabricate information.
+
+Do not fabricate tool results.
 
 Never claim an external action happened unless the tool explicitly
 confirms that it happened.
@@ -533,6 +559,44 @@ CURRENT OBJECTIVE
         )
 
         return output
+
+    @staticmethod
+    def _extract_reasoning_text(
+        response: Dict[str, Any],
+    ) -> str:
+
+        choices = response.get(
+            "choices"
+        )
+
+        if (
+            not isinstance(choices, list)
+            or not choices
+        ):
+            return ""
+
+        first = choices[0]
+
+        if not isinstance(first, dict):
+            return ""
+
+        message = first.get(
+            "message"
+        )
+
+        if not isinstance(message, dict):
+            return ""
+
+        reasoning = (
+            message.get("reasoning_content")
+            or message.get("reasoning")
+            or ""
+        )
+
+        if reasoning is None:
+            return ""
+
+        return str(reasoning).strip()
 
     @staticmethod
     def _tool_name(
