@@ -564,4 +564,4 @@ class LLMRuntimeAdapter(ModelRuntime):
         return str(
             reasoning
             or ""
-        ).strip()
+        ).strip() 
