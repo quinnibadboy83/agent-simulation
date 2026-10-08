@@ -8,6 +8,23 @@ from .brain_memory import BrainMemory
 from .brain_tools import BrainToolAdapter
 from .llm import LLMClient, LLMError
 
+from .experience_memory import (
+    Experience,
+    ExperienceMemory,
+)
+
+from .knowledge_store import (
+    KnowledgeStore,
+)
+
+from .memory_retrieval import (
+    MemoryRetrieval,
+)
+
+from .cognitive_context import (
+    CognitiveContextBuilder,
+)
+
 
 class AutonomousBrain:
     """
@@ -29,25 +46,25 @@ class AutonomousBrain:
         observation
         iterative decision making
 
-    Flow:
+    Persistent cognitive layer:
 
-        request
-          ↓
-        perceive context
-          ↓
-        LLM reasoning
-          ↓
-        tool selection
-          ↓
-        execute tool
-          ↓
-        observe result
-          ↓
-        LLM reasoning
-          ↓
-        repeat
-          ↓
-        final answer
+        experience
+            ↓
+        evaluation / learning
+            ↓
+        knowledge
+            ↓
+        retrieval
+            ↓
+        cognitive context
+            ↓
+        reasoning
+
+    Existing BrainMemory remains available for short-term/current
+    cognitive state.
+
+    ExperienceMemory and KnowledgeStore provide persistent learning
+    across runs.
     """
 
     def __init__(
@@ -59,6 +76,9 @@ class AutonomousBrain:
         llm: Optional[LLMClient] = None,
         config: Optional[BrainConfig] = None,
         objective: Optional[str] = None,
+        experience_memory: Optional[ExperienceMemory] = None,
+        knowledge_store: Optional[KnowledgeStore] = None,
+        memory_retrieval: Optional[MemoryRetrieval] = None,
     ):
         self.agent_name = agent_name
         self.memory = memory
@@ -77,10 +97,64 @@ class AutonomousBrain:
             else LLMClient(self.config)
         )
 
+        # --------------------------------------------------------------
+        # Existing short-term cognitive memory.
+        # --------------------------------------------------------------
+
         self.cognitive_memory = BrainMemory(
             memory=memory,
             room=room,
         )
+
+        # --------------------------------------------------------------
+        # Persistent learning memory.
+        #
+        # These stores are intentionally independent of the model
+        # provider and runtime.
+        # --------------------------------------------------------------
+
+        self.experience_memory = (
+            experience_memory
+            if experience_memory is not None
+            else ExperienceMemory()
+        )
+
+        self.knowledge_store = (
+            knowledge_store
+            if knowledge_store is not None
+            else KnowledgeStore()
+        )
+
+        self.memory_retrieval = (
+            memory_retrieval
+            if memory_retrieval is not None
+            else MemoryRetrieval(
+                experience_memory=(
+                    self.experience_memory
+                ),
+                knowledge_store=(
+                    self.knowledge_store
+                ),
+            )
+        )
+
+        self.cognitive_context = (
+            CognitiveContextBuilder(
+                experience_memory=(
+                    self.experience_memory
+                ),
+                knowledge_store=(
+                    self.knowledge_store
+                ),
+                retrieval=(
+                    self.memory_retrieval
+                ),
+            )
+        )
+
+        # --------------------------------------------------------------
+        # Existing tool system.
+        # --------------------------------------------------------------
 
         self.tool_adapter = BrainToolAdapter(
             tools=tools,
@@ -148,11 +222,26 @@ class AutonomousBrain:
                 "configuration": self.config.public(),
             }
 
+        # --------------------------------------------------------------
+        # Build persistent cognitive context BEFORE reasoning.
+        #
+        # This is the new Module 7 integration point.
+        # --------------------------------------------------------------
+
+        cognitive_context = (
+            self.cognitive_context.build_for_planning(
+                agent_name=self.agent_name,
+                goal=active_objective,
+                limit=10,
+            )
+        )
+
         messages: List[Dict[str, Any]] = [
             {
                 "role": "system",
                 "content": self._build_system_prompt(
-                    active_objective
+                    active_objective,
+                    cognitive_context=cognitive_context,
                 ),
             },
             {
@@ -163,12 +252,6 @@ class AutonomousBrain:
 
         # --------------------------------------------------------------
         # Autonomous reasoning loop.
-        #
-        # The model may still use tools and perform multiple steps.
-        # However, every individual LLM call is expected to return a
-        # useful decision rather than unlimited internal reasoning.
-        # This is important when the model is reached through a
-        # Cloudflare proxy with a 120-second response limit.
         # --------------------------------------------------------------
 
         for step in range(
@@ -186,6 +269,20 @@ class AutonomousBrain:
             except LLMError as exc:
                 self.state = "error"
 
+                self._record_experience(
+                    request=request,
+                    objective=active_objective,
+                    decision="LLM request failed.",
+                    action="reason",
+                    result=str(exc),
+                    success=False,
+                    lesson=(
+                        "The reasoning cycle failed because "
+                        "the configured model runtime returned "
+                        "an LLM error."
+                    ),
+                )
+
                 return {
                     "status": "error",
                     "agent": self.agent_name,
@@ -196,6 +293,19 @@ class AutonomousBrain:
 
             except Exception as exc:
                 self.state = "error"
+
+                self._record_experience(
+                    request=request,
+                    objective=active_objective,
+                    decision="Unexpected reasoning failure.",
+                    action="reason",
+                    result=str(exc),
+                    success=False,
+                    lesson=(
+                        "The reasoning cycle encountered "
+                        "an unexpected exception."
+                    ),
+                )
 
                 return {
                     "status": "error",
@@ -234,10 +344,6 @@ class AutonomousBrain:
                     response
                 )
 
-                # Some reasoning models can return an empty visible
-                # content field if their generation budget is exhausted.
-                # Preserve useful reasoning text if available rather
-                # than returning an apparently blank successful answer.
                 if not final_text:
                     final_text = (
                         self._extract_reasoning_text(
@@ -257,6 +363,24 @@ class AutonomousBrain:
                     }
                 )
 
+                # ------------------------------------------------------
+                # Persist successful experience.
+                # ------------------------------------------------------
+
+                self._record_experience(
+                    request=request,
+                    objective=active_objective,
+                    decision=(
+                        "Completed the requested reasoning task."
+                    ),
+                    action="reason",
+                    result=final_text,
+                    success=True,
+                    lesson=(
+                        "The reasoning cycle completed successfully."
+                    ),
+                )
+
                 return {
                     "status": "success",
                     "agent": self.agent_name,
@@ -264,6 +388,11 @@ class AutonomousBrain:
                     "objective": active_objective,
                     "response": final_text,
                     "steps": self.step_count,
+                    "memory": (
+                        self._memory_summary(
+                            cognitive_context
+                        )
+                    ),
                 }
 
             # ----------------------------------------------------------
@@ -306,11 +435,56 @@ class AutonomousBrain:
                     }
                 )
 
+                # ------------------------------------------------------
+                # Store the tool experience.
+                #
+                # The result is evidence for future learning.
+                # It does not itself grant permission for future use.
+                # ------------------------------------------------------
+
+                self._record_experience(
+                    request=request,
+                    objective=active_objective,
+                    decision=(
+                        f"Selected tool '{tool_name}'."
+                    ),
+                    action=tool_name,
+                    result=result,
+                    success=(
+                        self._tool_result_success(
+                            result
+                        )
+                    ),
+                    lesson=(
+                        self._tool_result_lesson(
+                            tool_name,
+                            result,
+                        )
+                    ),
+                )
+
         # --------------------------------------------------------------
         # Reasoning limit reached.
         # --------------------------------------------------------------
 
         self.state = "paused"
+
+        self._record_experience(
+            request=request,
+            objective=active_objective,
+            decision=(
+                "Reasoning cycle reached its configured limit."
+            ),
+            action="reason",
+            result=(
+                "Maximum reasoning steps reached."
+            ),
+            success=False,
+            lesson=(
+                "The reasoning cycle reached the configured "
+                "maximum number of steps before completion."
+            ),
+        )
 
         return {
             "status": "max_steps_reached",
@@ -423,9 +597,23 @@ class AutonomousBrain:
     def _build_system_prompt(
         self,
         objective: str,
+        cognitive_context=None,
     ) -> str:
 
-        context = (
+        if cognitive_context is None:
+            cognitive_context = (
+                self.cognitive_context.build_for_planning(
+                    agent_name=self.agent_name,
+                    goal=objective,
+                    limit=10,
+                )
+            )
+
+        persistent_context = (
+            cognitive_context.system_context
+        )
+
+        short_term_context = (
             self.cognitive_memory.system_context(
                 agent_name=self.agent_name,
                 objective=objective,
@@ -442,7 +630,8 @@ You are NOT a scripted command parser.
 Understand natural-language objectives and determine the best
 permitted way to accomplish them.
 
-You have access to tools and persistent cognitive memory.
+You have access to tools, short-term cognitive memory, persistent
+experience memory, and learned knowledge.
 
 REASONING LOOP
 
@@ -480,6 +669,29 @@ Do not fabricate tool results.
 Never claim an external action happened unless the tool explicitly
 confirms that it happened.
 
+PERSISTENT MEMORY RULES
+
+Persistent memory is evidence, not authority.
+
+Previous success does not guarantee future success.
+
+Previous failure does not prove an approach can never work.
+
+Conflicting evidence must remain visible.
+
+Always consider the current situation.
+
+Memory does not grant permission to execute actions.
+
+LEARNING RULE
+
+Use previous experiences and learned knowledge to improve decisions.
+
+Do not pretend that memory is certain when confidence is low.
+
+Do not invent lessons that are not supported by stored experience
+or knowledge.
+
 SAFETY BOUNDARY
 
 Research, analysis, planning, simulation and information gathering
@@ -502,14 +714,157 @@ Examples include:
 
 Never bypass the approval system.
 
-CURRENT COGNITIVE CONTEXT
+SHORT-TERM COGNITIVE MEMORY
 
-{context}
+{short_term_context}
+
+PERSISTENT COGNITIVE CONTEXT
+
+{persistent_context}
 
 CURRENT OBJECTIVE
 
 {objective}
 """.strip()
+
+    # ------------------------------------------------------------------
+    # Persistent experience recording
+    # ------------------------------------------------------------------
+
+    def _record_experience(
+        self,
+        request: str,
+        objective: str,
+        decision: str,
+        action: str,
+        result: Any,
+        success: Optional[bool],
+        lesson: str = "",
+    ) -> None:
+
+        try:
+            experience = Experience(
+                agent_name=self.agent_name,
+                goal=objective,
+                decision=decision,
+                action=action,
+                result=result,
+                success=success,
+                lesson=lesson,
+                confidence=(
+                    0.9
+                    if success is True
+                    else 0.3
+                    if success is False
+                    else 0.5
+                ),
+                context={
+                    "request": request,
+                    "objective": objective,
+                    "steps": self.step_count,
+                },
+                metadata={
+                    "source": "AutonomousBrain",
+                    "brain_agent": self.agent_name,
+                },
+            )
+
+            self.experience_memory.save(
+                experience
+            )
+
+        except Exception:
+            # Persistent learning must never crash the brain.
+            pass
+
+    @staticmethod
+    def _tool_result_success(
+        result: Any,
+    ) -> Optional[bool]:
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+            return True
+
+        status = str(
+            result.get(
+                "status",
+                "",
+            )
+        ).lower()
+
+        if status in {
+            "error",
+            "failed",
+            "failure",
+        }:
+            return False
+
+        if status in {
+            "success",
+            "ok",
+            "completed",
+        }:
+            return True
+
+        return None
+
+    @staticmethod
+    def _tool_result_lesson(
+        tool_name: str,
+        result: Any,
+    ) -> str:
+
+        success = (
+            AutonomousBrain._tool_result_success(
+                result
+            )
+        )
+
+        if success is True:
+            return (
+                f"Tool '{tool_name}' produced a successful "
+                "result in this reasoning cycle."
+            )
+
+        if success is False:
+            return (
+                f"Tool '{tool_name}' produced an unsuccessful "
+                "result in this reasoning cycle."
+            )
+
+        return (
+            f"Tool '{tool_name}' produced a result whose "
+            "success status was not explicitly determined."
+        )
+
+    @staticmethod
+    def _memory_summary(
+        cognitive_context,
+    ) -> Dict[str, Any]:
+
+        if cognitive_context is None:
+            return {
+                "retrieved": False,
+            }
+
+        return {
+            "retrieved": True,
+            "matches": len(
+                cognitive_context.memory.matches
+            ),
+            "experiences": len(
+                cognitive_context.memory.experiences
+            ),
+            "knowledge": len(
+                cognitive_context.memory.knowledge
+            ),
+            "guidance": len(
+                cognitive_context.guidance
+            ),
+        }
 
     # ------------------------------------------------------------------
     # Response parsing
@@ -739,6 +1094,7 @@ CURRENT OBJECTIVE
             "tools_available": len(
                 self.tool_adapter.definitions()
             ),
+            "persistent_memory": True,
         }
 
     def reset(self) -> None:
