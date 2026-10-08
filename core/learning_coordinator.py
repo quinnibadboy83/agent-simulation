@@ -34,9 +34,6 @@ class LearningCoordinator:
             ↓
         persistent knowledge
 
-    This module deliberately sits above the individual memory and
-    learning components.
-
     ExperienceMemory records what happened.
 
     LearningEngine evaluates what happened.
@@ -95,8 +92,6 @@ class LearningCoordinator:
         """
         Evaluate one experience and convert the resulting lesson into
         persistent knowledge.
-
-        Returns the resulting Knowledge object.
 
         Returns None when the experience does not contain enough
         information to produce a lesson.
@@ -162,8 +157,6 @@ class LearningCoordinator:
     ) -> List[Knowledge]:
         """
         Evaluate recent experiences and persist the resulting lessons.
-
-        This is the primary batch-learning operation.
         """
 
         lessons = (
@@ -198,9 +191,6 @@ class LearningCoordinator:
     ) -> Dict[str, Any]:
         """
         Run a complete learning cycle for one agent.
-
-        Returns a summary suitable for diagnostics, orchestration,
-        dashboards, or future autonomous scheduling.
         """
 
         if not agent_name:
@@ -256,8 +246,10 @@ class LearningCoordinator:
         """
         Convert a Lesson into KnowledgeStore data.
 
-        Existing matching knowledge is reinforced rather than blindly
-        duplicated.
+        Existing matching knowledge is reinforced with the correct
+        positive/negative evidence.
+
+        The original experience ID is preserved as evidence.
         """
 
         statement = (
@@ -271,40 +263,27 @@ class LearningCoordinator:
             lesson
         )
 
-        existing = (
+        source_experience_id = None
+
+        if lesson.source_experience_ids:
+            source_experience_id = (
+                lesson.source_experience_ids[0]
+            )
+
+        knowledge = (
             self.knowledge_store.find_or_create(
                 agent_name=lesson.agent_name,
                 topic=topic,
                 statement=statement,
                 knowledge_type="lesson",
                 confidence=lesson.confidence,
+                positive=lesson.positive,
+                experience_id=source_experience_id,
                 context=lesson.context,
             )
         )
 
-        if existing is None:
-            return None
-
-        # If the knowledge item already existed, reinforce it with the
-        # source experience when possible.
-        for experience_id in (
-            lesson.source_experience_ids
-        ):
-            if not experience_id:
-                continue
-
-            refreshed = (
-                self.knowledge_store.reinforce(
-                    knowledge_id=existing.knowledge_id,
-                    positive=lesson.positive,
-                    experience_id=experience_id,
-                )
-            )
-
-            if refreshed is not None:
-                existing = refreshed
-
-        return existing
+        return knowledge
 
     # ------------------------------------------------------------------
     # Topic generation
@@ -317,8 +296,7 @@ class LearningCoordinator:
         """
         Derive a stable topic from lesson context.
 
-        The topic is deliberately conservative. It does not ask an
-        LLM to invent a category.
+        The topic is deliberately conservative.
         """
 
         context = (
