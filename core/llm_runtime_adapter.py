@@ -1,3 +1,36 @@
+"""
+LLM Runtime Adapter
+-------------------
+
+Compatibility bridge between the existing LLMClient and the
+provider-independent ModelRuntime architecture.
+
+The adapter now supports the RuntimeManager so the application can
+select the configured runtime without requiring AutonomousBrain to
+know which runtime is being used.
+
+Architecture:
+
+    AutonomousBrain
+          |
+          v
+    BrainRuntime
+          |
+          v
+    LLMRuntimeAdapter
+          |
+          +--------------------+
+          |                    |
+          v                    v
+    RuntimeManager       legacy LLMClient
+          |
+          v
+    RuntimeFactory
+          |
+          v
+    ModelRuntime
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -16,6 +49,15 @@ from .model_runtime import (
     RuntimeCapabilities,
 )
 
+from .runtime_config import (
+    RuntimeConfig,
+)
+
+from .runtime_manager import (
+    RuntimeManager,
+    RuntimeManagerError,
+)
+
 
 class LLMRuntimeAdapterError(Exception):
     """Raised when the LLM runtime adapter fails."""
@@ -23,46 +65,23 @@ class LLMRuntimeAdapterError(Exception):
 
 class LLMRuntimeAdapter(ModelRuntime):
     """
-    Compatibility adapter between the existing LLMClient and the
-    provider-independent ModelRuntime interface.
+    Compatibility adapter between LLMClient and ModelRuntime.
 
-    Current transition:
+    The RuntimeManager is preferred.
 
-        AutonomousBrain
-              |
-              v
-        BrainRuntime
-              |
-              v
-        LLMRuntimeAdapter
-              |
-              v
-          LLMClient
+    The legacy LLMClient remains available as a compatibility fallback.
 
-    Future:
-
-        AutonomousBrain
-              |
-              v
-        BrainRuntime
-              |
-              v
-        ModelRuntime
-              |
-              +-- local llama.cpp
-              +-- Android runtime
-              +-- desktop runtime
-              +-- other local runtimes
-
-    The existing LLMClient remains intact.
+    This allows the existing AutonomousBrain to migrate to the new
+    runtime architecture without breaking its current interface.
     """
 
-    name = "llm_client_adapter"
+    name = "llm_runtime_adapter"
 
     def __init__(
         self,
         client: LLMClient,
-        runtime_name: str = "llm_client_adapter",
+        runtime_manager: Optional[RuntimeManager] = None,
+        runtime_name: str = "llm_runtime_adapter",
     ):
         if not isinstance(
             client,
@@ -75,9 +94,49 @@ class LLMRuntimeAdapter(ModelRuntime):
         self.client = client
         self.name = runtime_name
 
+        self.runtime_manager = (
+            runtime_manager
+            if runtime_manager is not None
+            else RuntimeManager(
+                config=RuntimeConfig.from_environment()
+            )
+        )
+
         self._last_health: Optional[
             ModelRuntimeInfo
         ] = None
+
+    # ------------------------------------------------------------------
+    # Runtime access
+    # ------------------------------------------------------------------
+
+    def _managed_runtime(self) -> Optional[ModelRuntime]:
+        """
+        Return the currently active managed runtime.
+
+        This method does not create a runtime. Runtime creation remains
+        lazy until generation or an explicit health check.
+        """
+
+        return self.runtime_manager.runtime
+
+    def _ensure_managed_runtime(self) -> ModelRuntime:
+        """
+        Create and return the configured managed runtime.
+        """
+
+        try:
+            return self.runtime_manager.ensure_started()
+
+        except RuntimeManagerError as exc:
+            raise ModelRuntimeError(
+                f"Unable to start model runtime: {exc}"
+            ) from exc
+
+        except Exception as exc:
+            raise ModelRuntimeError(
+                f"Unexpected runtime startup error: {exc}"
+            ) from exc
 
     # ------------------------------------------------------------------
     # Runtime description
@@ -87,69 +146,113 @@ class LLMRuntimeAdapter(ModelRuntime):
         self,
     ) -> ModelRuntimeInfo:
         """
-        Describe the underlying LLMClient runtime.
+        Describe the managed runtime when available.
+
+        Before the managed runtime is started, describe the configured
+        runtime using RuntimeConfig without making a network request.
         """
 
-        config = getattr(
-            self.client,
-            "config",
-            None,
-        )
+        managed = self._managed_runtime()
 
-        provider = str(
-            getattr(
-                config,
-                "provider",
-                "unknown",
-            )
-            or "unknown"
-        )
+        if managed is not None:
+            try:
+                description = managed.describe()
 
-        model = str(
-            getattr(
-                config,
-                "model",
-                "unknown",
-            )
-            or "unknown"
-        )
+                if isinstance(
+                    description,
+                    ModelRuntimeInfo,
+                ):
+                    return description
 
-        enabled = bool(
-            getattr(
-                config,
-                "enabled",
-                False,
-            )
-        )
+                if isinstance(
+                    description,
+                    dict,
+                ):
+                    return ModelRuntimeInfo(
+                        runtime=str(
+                            description.get(
+                                "runtime",
+                                self.name,
+                            )
+                        ),
+                        provider=str(
+                            description.get(
+                                "provider",
+                                self.runtime_manager.config.provider,
+                            )
+                        ),
+                        model=str(
+                            description.get(
+                                "model",
+                                self.runtime_manager.config.model,
+                            )
+                        ),
+                        available=bool(
+                            description.get(
+                                "available",
+                                False,
+                            )
+                        ),
+                        endpoint=description.get(
+                            "endpoint",
+                            self.runtime_manager.config.base_url,
+                        ),
+                        capabilities=list(
+                            description.get(
+                                "capabilities",
+                                [],
+                            )
+                        ),
+                        hardware=dict(
+                            description.get(
+                                "hardware",
+                                {},
+                            )
+                        ),
+                        metadata=dict(
+                            description.get(
+                                "metadata",
+                                {},
+                            )
+                        ),
+                        error=description.get(
+                            "error"
+                        ),
+                    )
 
-        base_url = getattr(
-            config,
-            "base_url",
-            None,
-        )
+            except Exception:
+                pass
+
+        config = self.runtime_manager.config
 
         return ModelRuntimeInfo(
-            runtime=self.name,
-            provider=provider,
-            model=model,
-            available=enabled,
-            endpoint=(
-                str(base_url)
-                if base_url
-                else None
+            runtime=(
+                config.runtime_name
+                or self.name
             ),
+            provider=config.provider,
+            model=config.model,
+            available=False,
+            endpoint=config.base_url,
             capabilities=[
                 RuntimeCapabilities.CHAT,
                 RuntimeCapabilities.REASONING,
                 RuntimeCapabilities.TOOL_CALLING,
-                RuntimeCapabilities.STREAMING,
             ],
+            hardware=(
+                {
+                    "configured": config.hardware
+                }
+                if config.hardware
+                else {}
+            ),
             metadata={
-                "adapter": (
-                    "LLMRuntimeAdapter"
+                "adapter": "LLMRuntimeAdapter",
+                "runtime_manager": True,
+                "runtime_started": (
+                    self.runtime_manager.started
                 ),
-                "legacy_client": "LLMClient",
-                "compatibility_mode": True,
+                "local": config.local,
             },
         )
 
@@ -161,139 +264,59 @@ class LLMRuntimeAdapter(ModelRuntime):
         self,
     ) -> ModelRuntimeInfo:
         """
-        Check the underlying LLMClient and return standard runtime
-        information.
+        Check the managed runtime.
+
+        If the managed runtime cannot be used, the legacy LLMClient is
+        checked as a compatibility path.
         """
 
-        description = self.describe()
-
         try:
-            health_method = getattr(
-                self.client,
-                "health",
-                None,
-            )
+            result = await self.runtime_manager.health()
 
-            if not callable(
-                health_method
+            if isinstance(
+                result,
+                ModelRuntimeInfo,
             ):
-                result = ModelRuntimeInfo(
-                    runtime=description.runtime,
-                    provider=description.provider,
-                    model=description.model,
-                    available=description.available,
-                    endpoint=description.endpoint,
-                    capabilities=list(
-                        description.capabilities
-                    ),
-                    hardware=dict(
-                        description.hardware
-                    ),
-                    metadata=dict(
-                        description.metadata
-                    ),
-                    error=(
-                        "LLMClient does not provide health()."
-                    ),
-                )
-
                 self._last_health = result
-
                 return result
 
-            raw_health = await health_method()
+        except Exception as managed_error:
+            description = self.describe()
 
-            if not isinstance(
-                raw_health,
-                dict,
-            ):
-                result = ModelRuntimeInfo(
-                    runtime=description.runtime,
-                    provider=description.provider,
-                    model=description.model,
-                    available=False,
-                    endpoint=description.endpoint,
-                    capabilities=list(
-                        description.capabilities
-                    ),
-                    hardware=dict(
-                        description.hardware
-                    ),
-                    metadata=dict(
-                        description.metadata
-                    ),
-                    error=(
-                        "LLMClient health() returned "
-                        "an unexpected response."
-                    ),
-                )
-
-                self._last_health = result
-
-                return result
-
-            status = str(
-                raw_health.get(
-                    "status",
-                    "",
-                )
-                or ""
-            ).lower()
-
-            available = (
-                status == "ready"
+            fallback = await self._legacy_health(
+                description=description,
+                error=str(managed_error),
             )
 
-            error = raw_health.get(
-                "error"
-            )
+            self._last_health = fallback
 
-            result = ModelRuntimeInfo(
-                runtime=description.runtime,
-                provider=(
-                    str(
-                        raw_health.get(
-                            "provider",
-                            description.provider,
-                        )
-                        or description.provider
-                    )
-                ),
-                model=(
-                    str(
-                        raw_health.get(
-                            "model",
-                            description.model,
-                        )
-                        or description.model
-                    )
-                ),
-                available=available,
-                endpoint=description.endpoint,
-                capabilities=list(
-                    description.capabilities
-                ),
-                hardware=dict(
-                    description.hardware
-                ),
-                metadata={
-                    **description.metadata,
-                    "health_status": status,
-                    "health_response": raw_health,
-                },
-                error=(
-                    str(error)
-                    if error
-                    else None
-                ),
-            )
+            return fallback
 
-            self._last_health = result
+        result = self.describe()
 
-            return result
+        self._last_health = result
 
-        except Exception as exc:
-            result = ModelRuntimeInfo(
+        return result
+
+    async def _legacy_health(
+        self,
+        description: ModelRuntimeInfo,
+        error: Optional[str] = None,
+    ) -> ModelRuntimeInfo:
+        """
+        Check the legacy LLMClient for compatibility.
+        """
+
+        health_method = getattr(
+            self.client,
+            "health",
+            None,
+        )
+
+        if not callable(
+            health_method
+        ):
+            return ModelRuntimeInfo(
                 runtime=description.runtime,
                 provider=description.provider,
                 model=description.model,
@@ -305,15 +328,105 @@ class LLMRuntimeAdapter(ModelRuntime):
                 hardware=dict(
                     description.hardware
                 ),
-                metadata=dict(
-                    description.metadata
+                metadata={
+                    **description.metadata,
+                    "compatibility_mode": True,
+                },
+                error=(
+                    error
+                    or "LLMClient does not provide health()."
                 ),
+            )
+
+        try:
+            raw_health = await health_method()
+
+            if isinstance(
+                raw_health,
+                dict,
+            ):
+                status = str(
+                    raw_health.get(
+                        "status",
+                        "",
+                    )
+                    or ""
+                ).lower()
+
+                return ModelRuntimeInfo(
+                    runtime=description.runtime,
+                    provider=str(
+                        raw_health.get(
+                            "provider",
+                            description.provider,
+                        )
+                        or description.provider
+                    ),
+                    model=str(
+                        raw_health.get(
+                            "model",
+                            description.model,
+                        )
+                        or description.model
+                    ),
+                    available=(
+                        status == "ready"
+                    ),
+                    endpoint=description.endpoint,
+                    capabilities=list(
+                        description.capabilities
+                    ),
+                    hardware=dict(
+                        description.hardware
+                    ),
+                    metadata={
+                        **description.metadata,
+                        "compatibility_mode": True,
+                        "health_status": status,
+                    },
+                    error=raw_health.get(
+                        "error"
+                    ),
+                )
+
+        except Exception as exc:
+            return ModelRuntimeInfo(
+                runtime=description.runtime,
+                provider=description.provider,
+                model=description.model,
+                available=False,
+                endpoint=description.endpoint,
+                capabilities=list(
+                    description.capabilities
+                ),
+                hardware=dict(
+                    description.hardware
+                ),
+                metadata={
+                    **description.metadata,
+                    "compatibility_mode": True,
+                },
                 error=str(exc),
             )
 
-            self._last_health = result
-
-            return result
+        return ModelRuntimeInfo(
+            runtime=description.runtime,
+            provider=description.provider,
+            model=description.model,
+            available=False,
+            endpoint=description.endpoint,
+            capabilities=list(
+                description.capabilities
+            ),
+            hardware=dict(
+                description.hardware
+            ),
+            metadata={
+                **description.metadata,
+                "compatibility_mode": True,
+            },
+            error=error,
+        )
 
     # ------------------------------------------------------------------
     # Generation
@@ -324,8 +437,53 @@ class LLMRuntimeAdapter(ModelRuntime):
         request: ModelRequest,
     ) -> ModelResponse:
         """
-        Convert a provider-neutral ModelRequest into the existing
-        LLMClient request format.
+        Generate through the RuntimeManager.
+
+        The managed ModelRuntime is now the primary inference path.
+
+        If runtime startup or generation fails, the legacy LLMClient
+        remains available as a compatibility fallback.
+        """
+
+        if not isinstance(
+            request,
+            ModelRequest,
+        ):
+            raise LLMRuntimeAdapterError(
+                "request must be a ModelRequest instance."
+            )
+
+        try:
+            runtime = self._ensure_managed_runtime()
+
+            response = await runtime.generate(
+                request
+            )
+
+            return self._normalise_runtime_response(
+                response
+            )
+
+        except ModelRuntimeError:
+            raise
+
+        except Exception as exc:
+            raise ModelRuntimeError(
+                f"Managed runtime generation failed: {exc}"
+            ) from exc
+
+    # ------------------------------------------------------------------
+    # Legacy generation
+    # ------------------------------------------------------------------
+
+    async def generate_legacy(
+        self,
+        request: ModelRequest,
+    ) -> ModelResponse:
+        """
+        Explicitly generate through the existing LLMClient.
+
+        This is retained for migration, diagnostics, and compatibility.
         """
 
         if not isinstance(
@@ -351,7 +509,7 @@ class LLMRuntimeAdapter(ModelRuntime):
 
         except Exception as exc:
             raise ModelRuntimeError(
-                f"Unexpected model runtime error: {exc}"
+                f"Unexpected legacy model runtime error: {exc}"
             ) from exc
 
         text = (
@@ -432,9 +590,8 @@ class LLMRuntimeAdapter(ModelRuntime):
             ),
             metadata={
                 "runtime": self.name,
-                "adapter": (
-                    "LLMRuntimeAdapter"
-                ),
+                "runtime_mode": "legacy_llm_client",
+                "compatibility_mode": True,
             },
         )
 
@@ -482,12 +639,19 @@ class LLMRuntimeAdapter(ModelRuntime):
         self,
     ) -> None:
         """
-        Close the underlying client when supported.
+        Shut down the managed runtime.
 
-        The current LLMClient does not maintain a persistent client
-        connection, so this is intentionally a no-op unless a future
-        implementation provides close().
+        The legacy client is only closed separately when no managed
+        runtime is active.
         """
+
+        try:
+            await self.runtime_manager.stop()
+        except Exception:
+            pass
+
+        if self.runtime_manager.runtime is not None:
+            return
 
         close_method = getattr(
             self.client,
@@ -509,6 +673,89 @@ class LLMRuntimeAdapter(ModelRuntime):
             await result
 
     # ------------------------------------------------------------------
+    # Response normalisation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalise_runtime_response(
+        response: Any,
+    ) -> ModelResponse:
+        """
+        Ensure the runtime response conforms to ModelResponse.
+        """
+
+        if isinstance(
+            response,
+            ModelResponse,
+        ):
+            return response
+
+        if isinstance(
+            response,
+            dict,
+        ):
+            return ModelResponse(
+                content=str(
+                    response.get(
+                        "content",
+                        response.get(
+                            "text",
+                            "",
+                        ),
+                    )
+                    or ""
+                ),
+                reasoning_content=str(
+                    response.get(
+                        "reasoning_content",
+                        response.get(
+                            "reasoning",
+                            "",
+                        ),
+                    )
+                    or ""
+                ),
+                tool_calls=(
+                    response.get(
+                        "tool_calls",
+                        [],
+                    )
+                    or []
+                ),
+                finish_reason=response.get(
+                    "finish_reason"
+                ),
+                model=response.get(
+                    "model"
+                ),
+                usage=(
+                    response.get(
+                        "usage",
+                        {},
+                    )
+                    or {}
+                ),
+                raw_response=(
+                    response.get(
+                        "raw_response",
+                        response,
+                    )
+                    or {}
+                ),
+                metadata=(
+                    response.get(
+                        "metadata",
+                        {},
+                    )
+                    or {}
+                ),
+            )
+
+        raise ModelRuntimeError(
+            "Runtime returned an unsupported response type."
+        )
+
+    # ------------------------------------------------------------------
     # Reasoning extraction
     # ------------------------------------------------------------------
 
@@ -517,8 +764,14 @@ class LLMRuntimeAdapter(ModelRuntime):
         response: Dict[str, Any],
     ) -> str:
         """
-        Extract reasoning_content from an OpenAI-compatible response.
+        Extract reasoning content from an OpenAI-compatible response.
         """
+
+        if not isinstance(
+            response,
+            dict,
+        ):
+            return ""
 
         choices = response.get(
             "choices"
@@ -564,4 +817,4 @@ class LLMRuntimeAdapter(ModelRuntime):
         return str(
             reasoning
             or ""
-        ).strip() 
+        ).strip()
