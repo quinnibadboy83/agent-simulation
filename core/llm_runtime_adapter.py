@@ -23,31 +23,41 @@ class LLMRuntimeAdapterError(Exception):
 
 class LLMRuntimeAdapter(ModelRuntime):
     """
-    Adapter that exposes the existing LLMClient through the new
+    Compatibility adapter between the existing LLMClient and the
     provider-independent ModelRuntime interface.
 
-    This allows the application to migrate gradually.
-
-    Existing:
+    Current transition:
 
         AutonomousBrain
-            ↓
-        LLMClient
+              |
+              v
+        BrainRuntime
+              |
+              v
+        LLMRuntimeAdapter
+              |
+              v
+          LLMClient
 
-    can eventually become:
+    Future:
 
         AutonomousBrain
-            ↓
+              |
+              v
+        BrainRuntime
+              |
+              v
         ModelRuntime
-            ↓
-        local / remote model
+              |
+              +-- local llama.cpp
+              +-- Android runtime
+              +-- desktop runtime
+              +-- other local runtimes
 
-    without requiring the old LLMClient to disappear immediately.
-
-    The adapter deliberately preserves the existing LLMClient as the
-    compatibility layer while the wider application moves toward the
-    new runtime abstraction.
+    The existing LLMClient remains intact.
     """
+
+    name = "llm_client_adapter"
 
     def __init__(
         self,
@@ -63,42 +73,250 @@ class LLMRuntimeAdapter(ModelRuntime):
             )
 
         self.client = client
-        self.runtime_name = runtime_name
+        self.name = runtime_name
 
-        self._info = ModelRuntimeInfo(
-            name=runtime_name,
-            provider=getattr(
-                client.config,
+        self._last_health: Optional[
+            ModelRuntimeInfo
+        ] = None
+
+    # ------------------------------------------------------------------
+    # Runtime description
+    # ------------------------------------------------------------------
+
+    def describe(
+        self,
+    ) -> ModelRuntimeInfo:
+        """
+        Describe the underlying LLMClient runtime.
+        """
+
+        config = getattr(
+            self.client,
+            "config",
+            None,
+        )
+
+        provider = str(
+            getattr(
+                config,
                 "provider",
                 "unknown",
-            ),
-            model=getattr(
-                client.config,
+            )
+            or "unknown"
+        )
+
+        model = str(
+            getattr(
+                config,
                 "model",
                 "unknown",
+            )
+            or "unknown"
+        )
+
+        enabled = bool(
+            getattr(
+                config,
+                "enabled",
+                False,
+            )
+        )
+
+        base_url = getattr(
+            config,
+            "base_url",
+            None,
+        )
+
+        return ModelRuntimeInfo(
+            runtime=self.name,
+            provider=provider,
+            model=model,
+            available=enabled,
+            endpoint=(
+                str(base_url)
+                if base_url
+                else None
             ),
-            capabilities={
+            capabilities=[
                 RuntimeCapabilities.CHAT,
+                RuntimeCapabilities.REASONING,
                 RuntimeCapabilities.TOOL_CALLING,
                 RuntimeCapabilities.STREAMING,
-                RuntimeCapabilities.REASONING,
-            },
+            ],
             metadata={
-                "adapter": "LLMRuntimeAdapter",
+                "adapter": (
+                    "LLMRuntimeAdapter"
+                ),
                 "legacy_client": "LLMClient",
+                "compatibility_mode": True,
             },
         )
 
     # ------------------------------------------------------------------
-    # Runtime information
+    # Runtime health
     # ------------------------------------------------------------------
 
-    @property
-    def info(self) -> ModelRuntimeInfo:
-        return self._info
+    async def health(
+        self,
+    ) -> ModelRuntimeInfo:
+        """
+        Check the underlying LLMClient and return standard runtime
+        information.
+        """
+
+        description = self.describe()
+
+        try:
+            health_method = getattr(
+                self.client,
+                "health",
+                None,
+            )
+
+            if not callable(
+                health_method
+            ):
+                result = ModelRuntimeInfo(
+                    runtime=description.runtime,
+                    provider=description.provider,
+                    model=description.model,
+                    available=description.available,
+                    endpoint=description.endpoint,
+                    capabilities=list(
+                        description.capabilities
+                    ),
+                    hardware=dict(
+                        description.hardware
+                    ),
+                    metadata=dict(
+                        description.metadata
+                    ),
+                    error=(
+                        "LLMClient does not provide health()."
+                    ),
+                )
+
+                self._last_health = result
+
+                return result
+
+            raw_health = await health_method()
+
+            if not isinstance(
+                raw_health,
+                dict,
+            ):
+                result = ModelRuntimeInfo(
+                    runtime=description.runtime,
+                    provider=description.provider,
+                    model=description.model,
+                    available=False,
+                    endpoint=description.endpoint,
+                    capabilities=list(
+                        description.capabilities
+                    ),
+                    hardware=dict(
+                        description.hardware
+                    ),
+                    metadata=dict(
+                        description.metadata
+                    ),
+                    error=(
+                        "LLMClient health() returned "
+                        "an unexpected response."
+                    ),
+                )
+
+                self._last_health = result
+
+                return result
+
+            status = str(
+                raw_health.get(
+                    "status",
+                    "",
+                )
+                or ""
+            ).lower()
+
+            available = (
+                status == "ready"
+            )
+
+            error = raw_health.get(
+                "error"
+            )
+
+            result = ModelRuntimeInfo(
+                runtime=description.runtime,
+                provider=(
+                    str(
+                        raw_health.get(
+                            "provider",
+                            description.provider,
+                        )
+                        or description.provider
+                    )
+                ),
+                model=(
+                    str(
+                        raw_health.get(
+                            "model",
+                            description.model,
+                        )
+                        or description.model
+                    )
+                ),
+                available=available,
+                endpoint=description.endpoint,
+                capabilities=list(
+                    description.capabilities
+                ),
+                hardware=dict(
+                    description.hardware
+                ),
+                metadata={
+                    **description.metadata,
+                    "health_status": status,
+                    "health_response": raw_health,
+                },
+                error=(
+                    str(error)
+                    if error
+                    else None
+                ),
+            )
+
+            self._last_health = result
+
+            return result
+
+        except Exception as exc:
+            result = ModelRuntimeInfo(
+                runtime=description.runtime,
+                provider=description.provider,
+                model=description.model,
+                available=False,
+                endpoint=description.endpoint,
+                capabilities=list(
+                    description.capabilities
+                ),
+                hardware=dict(
+                    description.hardware
+                ),
+                metadata=dict(
+                    description.metadata
+                ),
+                error=str(exc),
+            )
+
+            self._last_health = result
+
+            return result
 
     # ------------------------------------------------------------------
-    # Core request
+    # Generation
     # ------------------------------------------------------------------
 
     async def generate(
@@ -106,7 +324,8 @@ class LLMRuntimeAdapter(ModelRuntime):
         request: ModelRequest,
     ) -> ModelResponse:
         """
-        Execute a ModelRequest using the existing LLMClient.
+        Convert a provider-neutral ModelRequest into the existing
+        LLMClient request format.
         """
 
         if not isinstance(
@@ -152,39 +371,75 @@ class LLMRuntimeAdapter(ModelRuntime):
             self.client.extract_tool_calls(
                 response
             )
+            or []
+        )
+
+        finish_reason = (
+            self.client.extract_finish_reason(
+                response
+            )
         )
 
         usage = (
-            response.get(
-                "usage",
-                {},
+            self.client.extract_usage(
+                response
             )
-            if isinstance(
-                response,
-                dict,
-            )
-            else {}
+            or {}
         )
 
-        metadata = {
-            "raw_response": response,
-        }
+        model = None
+
+        if isinstance(
+            response,
+            dict,
+        ):
+            raw_model = response.get(
+                "model"
+            )
+
+            if raw_model is not None:
+                model = str(
+                    raw_model
+                )
 
         return ModelResponse(
-            text=text,
-            reasoning=reasoning,
+            content=str(
+                text
+                or ""
+            ),
+            reasoning_content=str(
+                reasoning
+                or ""
+            ),
             tool_calls=tool_calls,
-            usage=usage
-            if isinstance(
-                usage,
-                dict,
-            )
-            else {},
-            metadata=metadata,
+            finish_reason=finish_reason,
+            model=model,
+            usage=(
+                usage
+                if isinstance(
+                    usage,
+                    dict,
+                )
+                else {}
+            ),
+            raw_response=(
+                response
+                if isinstance(
+                    response,
+                    dict,
+                )
+                else {}
+            ),
+            metadata={
+                "runtime": self.name,
+                "adapter": (
+                    "LLMRuntimeAdapter"
+                ),
+            },
         )
 
     # ------------------------------------------------------------------
-    # Convenience interface
+    # Compatibility chat method
     # ------------------------------------------------------------------
 
     async def chat(
@@ -197,14 +452,22 @@ class LLMRuntimeAdapter(ModelRuntime):
         max_tokens: Optional[int] = None,
     ) -> ModelResponse:
         """
-        Convenience wrapper around generate().
+        Convenience method matching the existing LLMClient style.
         """
 
         request = ModelRequest(
             messages=messages,
             tools=tools or [],
-            temperature=temperature,
-            max_tokens=max_tokens,
+            temperature=(
+                0.2
+                if temperature is None
+                else temperature
+            ),
+            max_tokens=(
+                1024
+                if max_tokens is None
+                else max_tokens
+            ),
         )
 
         return await self.generate(
@@ -212,62 +475,18 @@ class LLMRuntimeAdapter(ModelRuntime):
         )
 
     # ------------------------------------------------------------------
-    # Health
-    # ------------------------------------------------------------------
-
-    async def health_check(
-        self,
-    ) -> bool:
-        """
-        Check whether the underlying LLM client can reach its model
-        provider.
-
-        This deliberately uses the existing client's configuration
-        rather than assuming a particular provider.
-        """
-
-        health_method = getattr(
-            self.client,
-            "health_check",
-            None,
-        )
-
-        if callable(
-            health_method
-        ):
-            try:
-                result = health_method()
-
-                if hasattr(
-                    result,
-                    "__await__",
-                ):
-                    result = await result
-
-                return bool(
-                    result
-                )
-
-            except Exception:
-                return False
-
-        # The legacy client may not expose a health endpoint.
-        # Configuration availability is therefore the best fallback.
-        return bool(
-            getattr(
-                self.client.config,
-                "enabled",
-                False,
-            )
-        )
-
-    # ------------------------------------------------------------------
     # Shutdown
     # ------------------------------------------------------------------
 
-    async def close(self) -> None:
+    async def close(
+        self,
+    ) -> None:
         """
-        Close the underlying LLM client if it provides a close method.
+        Close the underlying client when supported.
+
+        The current LLMClient does not maintain a persistent client
+        connection, so this is intentionally a no-op unless a future
+        implementation provides close().
         """
 
         close_method = getattr(
@@ -276,19 +495,21 @@ class LLMRuntimeAdapter(ModelRuntime):
             None,
         )
 
-        if callable(
+        if not callable(
             close_method
         ):
-            result = close_method()
+            return
 
-            if hasattr(
-                result,
-                "__await__",
-            ):
-                await result
+        result = close_method()
+
+        if hasattr(
+            result,
+            "__await__",
+        ):
+            await result
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Reasoning extraction
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -296,8 +517,7 @@ class LLMRuntimeAdapter(ModelRuntime):
         response: Dict[str, Any],
     ) -> str:
         """
-        Extract reasoning content from Qwen-compatible and other
-        OpenAI-compatible response formats.
+        Extract reasoning_content from an OpenAI-compatible response.
         """
 
         choices = response.get(
