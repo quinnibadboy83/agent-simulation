@@ -9,10 +9,10 @@ model provider, server, operating system, or hardware configuration.
 
 Supported runtime types currently include:
 
+- Development / deterministic runtime
 - OpenAI-compatible HTTP runtimes
 - llama.cpp / llama-server through its OpenAI-compatible API
-
-The runtime itself remains behind the ModelRuntime abstraction.
+- Local compatible runtimes
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional
 
 from .model_runtime import ModelRuntime, ModelRuntimeError
 from .openai_compatible_runtime import OpenAICompatibleRuntime
+from .development_runtime import DevelopmentModelRuntime
 
 
 class RuntimeFactoryError(ModelRuntimeError):
@@ -37,14 +38,14 @@ class RuntimeFactory:
 
     Supported runtime values:
 
+        development
+        dev
+        test
         openai_compatible
         llama_cpp
         llama-server
         llamacpp
         local
-
-    The OpenAI-compatible implementation is intentionally used for
-    llama.cpp because llama-server exposes an OpenAI-compatible API.
     """
 
     DEFAULT_RUNTIME = "openai_compatible"
@@ -52,6 +53,9 @@ class RuntimeFactory:
     DEFAULT_TIMEOUT = 300.0
 
     SUPPORTED_RUNTIMES = {
+        "development",
+        "dev",
+        "test",
         "openai_compatible",
         "llama_cpp",
         "llama-server",
@@ -129,6 +133,25 @@ class RuntimeFactory:
             or f"{selected_provider}:{selected_model}"
         )
 
+        # -------------------------------------------------------------
+        # Development runtime
+        # -------------------------------------------------------------
+
+        if selected_type in {
+            "development",
+            "dev",
+            "test",
+        }:
+            return DevelopmentModelRuntime(
+                model=selected_model,
+                runtime_name=selected_runtime_name,
+                provider=selected_provider,
+            )
+
+        # -------------------------------------------------------------
+        # OpenAI-compatible / llama.cpp runtimes
+        # -------------------------------------------------------------
+
         if selected_type in {
             "openai_compatible",
             "llama_cpp",
@@ -147,11 +170,14 @@ class RuntimeFactory:
             )
 
         raise RuntimeFactoryError(
-            f"No factory implementation exists for runtime: {selected_type}"
+            "No factory implementation exists for runtime: "
+            f"{selected_type}"
         )
 
     @classmethod
-    def from_environment(cls) -> ModelRuntime:
+    def from_environment(
+        cls,
+    ) -> ModelRuntime:
         """
         Create a runtime entirely from environment configuration.
         """
@@ -159,7 +185,9 @@ class RuntimeFactory:
         return cls.create()
 
     @classmethod
-    def describe_configuration(cls) -> Dict[str, Any]:
+    def describe_configuration(
+        cls,
+    ) -> Dict[str, Any]:
         """
         Return the effective runtime configuration without exposing
         secret values.
@@ -205,12 +233,22 @@ class RuntimeFactory:
         }
 
     @classmethod
-    def _default_provider(cls, runtime_type: str) -> str:
+    def _default_provider(
+        cls,
+        runtime_type: str,
+    ) -> str:
         """
         Determine a sensible provider name from the runtime type.
         """
 
         normalized = runtime_type.strip().lower()
+
+        if normalized in {
+            "development",
+            "dev",
+            "test",
+        }:
+            return "development"
 
         if normalized in {
             "llama_cpp",
@@ -225,15 +263,19 @@ class RuntimeFactory:
         return "openai_compatible"
 
     @classmethod
-    def _resolve_timeout(cls, timeout: Optional[float]) -> float:
+    def _resolve_timeout(
+        cls,
+        timeout: Optional[float],
+    ) -> float:
         """
-        Resolve the HTTP timeout.
+        Resolve the runtime timeout.
 
         Explicit timeout takes priority over environment configuration.
         """
 
         if timeout is not None:
             resolved = float(timeout)
+
         else:
             raw_timeout = (
                 os.getenv("MODEL_TIMEOUT")
@@ -243,10 +285,13 @@ class RuntimeFactory:
             if raw_timeout:
                 try:
                     resolved = float(raw_timeout)
+
                 except ValueError as exc:
                     raise RuntimeFactoryError(
-                        f"Invalid model timeout: {raw_timeout}"
+                        "Invalid model timeout: "
+                        f"{raw_timeout}"
                     ) from exc
+
             else:
                 resolved = cls.DEFAULT_TIMEOUT
 
@@ -264,14 +309,6 @@ def create_model_runtime(
 ) -> ModelRuntime:
     """
     Convenience function for creating a model runtime.
-
-    Example:
-
-        runtime = create_model_runtime(
-            runtime_type="llama_cpp",
-            base_url="http://127.0.0.1:8080/v1",
-            model="qwen3-8b",
-        )
     """
 
     return RuntimeFactory.create(
