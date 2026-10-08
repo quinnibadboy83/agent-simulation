@@ -8,6 +8,20 @@ from .brain_memory import BrainMemory
 from .brain_tools import BrainToolAdapter
 from .llm import LLMClient, LLMError
 
+from .brain_runtime import (
+    BrainRuntime,
+    BrainRuntimeError,
+)
+
+from .llm_runtime_adapter import (
+    LLMRuntimeAdapter,
+)
+
+from .model_runtime import (
+    ModelRuntime,
+    ModelRuntimeError,
+)
+
 from .experience_memory import (
     Experience,
     ExperienceMemory,
@@ -60,6 +74,19 @@ class AutonomousBrain:
             ↓
         reasoning
 
+    Runtime layer:
+
+        AutonomousBrain
+              ↓
+        BrainRuntime
+              ↓
+        ModelRuntime
+              ↓
+        local / remote model
+
+    The existing LLMClient remains supported as a compatibility
+    fallback while the runtime architecture is migrated.
+
     Existing BrainMemory remains available for short-term/current
     cognitive state.
 
@@ -79,6 +106,7 @@ class AutonomousBrain:
         experience_memory: Optional[ExperienceMemory] = None,
         knowledge_store: Optional[KnowledgeStore] = None,
         memory_retrieval: Optional[MemoryRetrieval] = None,
+        runtime: Optional[ModelRuntime] = None,
     ):
         self.agent_name = agent_name
         self.memory = memory
@@ -91,11 +119,46 @@ class AutonomousBrain:
             else BrainConfig.from_environment()
         )
 
+        # --------------------------------------------------------------
+        # Existing LLM client.
+        #
+        # This remains available for compatibility.
+        # --------------------------------------------------------------
+
         self.llm = (
             llm
             if llm is not None
             else LLMClient(self.config)
         )
+
+        # --------------------------------------------------------------
+        # Model runtime.
+        #
+        # If an explicit ModelRuntime is supplied, use it.
+        #
+        # Otherwise wrap the existing LLMClient so the brain can use
+        # the new provider-independent runtime interface without
+        # breaking the current system.
+        # --------------------------------------------------------------
+
+        self.runtime = runtime
+
+        if self.runtime is not None:
+            self.brain_runtime = BrainRuntime(
+                runtime=self.runtime,
+                legacy_llm=self.llm,
+            )
+        else:
+            self.runtime_adapter = (
+                LLMRuntimeAdapter(
+                    self.llm
+                )
+            )
+
+            self.brain_runtime = BrainRuntime(
+                runtime=self.runtime_adapter,
+                legacy_llm=self.llm,
+            )
 
         # --------------------------------------------------------------
         # Existing short-term cognitive memory.
@@ -108,9 +171,6 @@ class AutonomousBrain:
 
         # --------------------------------------------------------------
         # Persistent learning memory.
-        #
-        # These stores are intentionally independent of the model
-        # provider and runtime.
         # --------------------------------------------------------------
 
         self.experience_memory = (
@@ -162,7 +222,9 @@ class AutonomousBrain:
 
         self.objective = objective
 
-        self.last_response: Optional[Dict[str, Any]] = None
+        self.last_response: Optional[
+            Dict[str, Any]
+        ] = None
 
         self.step_count = 0
 
@@ -178,7 +240,9 @@ class AutonomousBrain:
         objective: Optional[str] = None,
     ) -> Dict[str, Any]:
 
-        request = str(request or "").strip()
+        request = str(
+            request or ""
+        ).strip()
 
         if not request:
             return {
@@ -224,8 +288,6 @@ class AutonomousBrain:
 
         # --------------------------------------------------------------
         # Build persistent cognitive context BEFORE reasoning.
-        #
-        # This is the new Module 7 integration point.
         # --------------------------------------------------------------
 
         cognitive_context = (
@@ -236,7 +298,9 @@ class AutonomousBrain:
             )
         )
 
-        messages: List[Dict[str, Any]] = [
+        messages: List[
+            Dict[str, Any]
+        ] = [
             {
                 "role": "system",
                 "content": self._build_system_prompt(
@@ -261,25 +325,48 @@ class AutonomousBrain:
             self.state = "thinking"
 
             try:
-                response = await self.llm.chat(
-                    messages=messages,
-                    tools=self.tool_adapter.definitions(),
+                runtime_response = (
+                    await self.brain_runtime.generate(
+                        messages=messages,
+                        tools=(
+                            self.tool_adapter.definitions()
+                        ),
+                        temperature=(
+                            self.config.temperature
+                        ),
+                        max_tokens=(
+                            self.config.max_tokens
+                        ),
+                    )
                 )
 
-            except LLMError as exc:
+                response = (
+                    runtime_response.raw_response
+                    if runtime_response.raw_response
+                    else self._runtime_response_to_dict(
+                        runtime_response
+                    )
+                )
+
+            except (
+                LLMError,
+                ModelRuntimeError,
+                BrainRuntimeError,
+            ) as exc:
+
                 self.state = "error"
 
                 self._record_experience(
                     request=request,
                     objective=active_objective,
-                    decision="LLM request failed.",
+                    decision="Model runtime request failed.",
                     action="reason",
                     result=str(exc),
                     success=False,
                     lesson=(
                         "The reasoning cycle failed because "
                         "the configured model runtime returned "
-                        "an LLM error."
+                        "an error."
                     ),
                 )
 
@@ -292,6 +379,7 @@ class AutonomousBrain:
                 }
 
             except Exception as exc:
+
                 self.state = "error"
 
                 self._record_experience(
@@ -312,7 +400,7 @@ class AutonomousBrain:
                     "agent": self.agent_name,
                     "request": request,
                     "message": (
-                        f"Unexpected LLM error: {exc}"
+                        f"Unexpected model error: {exc}"
                     ),
                     "step": self.step_count,
                 }
@@ -329,10 +417,14 @@ class AutonomousBrain:
                 assistant_message
             )
 
+            # ----------------------------------------------------------
+            # Tool calls are taken from the runtime response rather
+            # than directly from LLMClient.
+            # ----------------------------------------------------------
+
             tool_calls = (
-                self.llm.extract_tool_calls(
-                    response
-                )
+                runtime_response.tool_calls
+                or []
             )
 
             # ----------------------------------------------------------
@@ -340,13 +432,18 @@ class AutonomousBrain:
             # ----------------------------------------------------------
 
             if not tool_calls:
-                final_text = self.llm.extract_text(
-                    response
+
+                final_text = (
+                    runtime_response.content
+                    or self._extract_text_from_response(
+                        response
+                    )
                 )
 
                 if not final_text:
                     final_text = (
-                        self._extract_reasoning_text(
+                        runtime_response.reasoning_content
+                        or self._extract_reasoning_text(
                             response
                         )
                     )
@@ -362,10 +459,6 @@ class AutonomousBrain:
                         "steps": self.step_count,
                     }
                 )
-
-                # ------------------------------------------------------
-                # Persist successful experience.
-                # ------------------------------------------------------
 
                 self._record_experience(
                     request=request,
@@ -393,6 +486,9 @@ class AutonomousBrain:
                             cognitive_context
                         )
                     ),
+                    "runtime": (
+                        self.brain_runtime.describe()
+                    ),
                 }
 
             # ----------------------------------------------------------
@@ -402,6 +498,7 @@ class AutonomousBrain:
             self.state = "acting"
 
             for tool_call in tool_calls:
+
                 result = await self._execute_tool_call(
                     tool_call
                 )
@@ -436,10 +533,10 @@ class AutonomousBrain:
                 )
 
                 # ------------------------------------------------------
-                # Store the tool experience.
+                # Store tool experience.
                 #
-                # The result is evidence for future learning.
-                # It does not itself grant permission for future use.
+                # Tool success is evidence for future learning.
+                # It does not grant permission for future actions.
                 # ------------------------------------------------------
 
                 self._record_experience(
@@ -521,6 +618,65 @@ class AutonomousBrain:
         )
 
     # ------------------------------------------------------------------
+    # Runtime response conversion
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _runtime_response_to_dict(
+        response: Any,
+    ) -> Dict[str, Any]:
+        """
+        Convert a provider-neutral ModelResponse into the legacy
+        OpenAI-compatible response structure used by the brain's
+        existing parsing helpers.
+
+        This exists only as a compatibility bridge.
+        """
+
+        tool_calls = (
+            response.tool_calls
+            or []
+        )
+
+        message: Dict[str, Any] = {
+            "role": "assistant",
+            "content": (
+                response.content
+                or ""
+            ),
+        }
+
+        if response.reasoning_content:
+            message[
+                "reasoning_content"
+            ] = response.reasoning_content
+
+        if tool_calls:
+            message[
+                "tool_calls"
+            ] = tool_calls
+
+        return {
+            "choices": [
+                {
+                    "message": message,
+                    "finish_reason": (
+                        response.finish_reason
+                    ),
+                }
+            ],
+            "model": response.model,
+            "usage": (
+                response.usage
+                or {}
+            ),
+            "runtime_metadata": (
+                response.metadata
+                or {}
+            ),
+        }
+
+    # ------------------------------------------------------------------
     # Tool execution
     # ------------------------------------------------------------------
 
@@ -561,7 +717,9 @@ class AutonomousBrain:
             None,
         )
 
-        if not callable(execute):
+        if not callable(
+            execute
+        ):
             return {
                 "status": "error",
                 "tool": tool_name,
@@ -571,6 +729,7 @@ class AutonomousBrain:
             }
 
         try:
+
             result = execute(
                 self.agent_name,
                 tool_name,
@@ -583,6 +742,7 @@ class AutonomousBrain:
             )
 
         except Exception as exc:
+
             return {
                 "status": "error",
                 "tool": tool_name,
@@ -601,6 +761,7 @@ class AutonomousBrain:
     ) -> str:
 
         if cognitive_context is None:
+
             cognitive_context = (
                 self.cognitive_context.build_for_planning(
                     agent_name=self.agent_name,
@@ -743,6 +904,7 @@ CURRENT OBJECTIVE
     ) -> None:
 
         try:
+
             experience = Experience(
                 agent_name=self.agent_name,
                 goal=objective,
@@ -880,7 +1042,10 @@ CURRENT OBJECTIVE
         )
 
         if (
-            not isinstance(choices, list)
+            not isinstance(
+                choices,
+                list,
+            )
             or not choices
         ):
             return {
@@ -890,7 +1055,10 @@ CURRENT OBJECTIVE
 
         first = choices[0]
 
-        if not isinstance(first, dict):
+        if not isinstance(
+            first,
+            dict,
+        ):
             return {
                 "role": "assistant",
                 "content": "",
@@ -900,13 +1068,18 @@ CURRENT OBJECTIVE
             "message"
         )
 
-        if not isinstance(message, dict):
+        if not isinstance(
+            message,
+            dict,
+        ):
             return {
                 "role": "assistant",
                 "content": "",
             }
 
-        output = dict(message)
+        output = dict(
+            message
+        )
 
         output.setdefault(
             "role",
@@ -914,6 +1087,54 @@ CURRENT OBJECTIVE
         )
 
         return output
+
+    @staticmethod
+    def _extract_text_from_response(
+        response: Dict[str, Any],
+    ) -> str:
+
+        choices = response.get(
+            "choices"
+        )
+
+        if (
+            not isinstance(
+                choices,
+                list,
+            )
+            or not choices
+        ):
+            return ""
+
+        first = choices[0]
+
+        if not isinstance(
+            first,
+            dict,
+        ):
+            return ""
+
+        message = first.get(
+            "message"
+        )
+
+        if not isinstance(
+            message,
+            dict,
+        ):
+            return ""
+
+        content = (
+            message.get(
+                "content"
+            )
+            or ""
+        )
+
+        return str(
+            content
+            or ""
+        ).strip()
 
     @staticmethod
     def _extract_reasoning_text(
@@ -925,33 +1146,48 @@ CURRENT OBJECTIVE
         )
 
         if (
-            not isinstance(choices, list)
+            not isinstance(
+                choices,
+                list,
+            )
             or not choices
         ):
             return ""
 
         first = choices[0]
 
-        if not isinstance(first, dict):
+        if not isinstance(
+            first,
+            dict,
+        ):
             return ""
 
         message = first.get(
             "message"
         )
 
-        if not isinstance(message, dict):
+        if not isinstance(
+            message,
+            dict,
+        ):
             return ""
 
         reasoning = (
-            message.get("reasoning_content")
-            or message.get("reasoning")
+            message.get(
+                "reasoning_content"
+            )
+            or message.get(
+                "reasoning"
+            )
             or ""
         )
 
         if reasoning is None:
             return ""
 
-        return str(reasoning).strip()
+        return str(
+            reasoning
+        ).strip()
 
     @staticmethod
     def _tool_name(
@@ -962,14 +1198,21 @@ CURRENT OBJECTIVE
             "function"
         )
 
-        if isinstance(function, dict):
+        if isinstance(
+            function,
+            dict,
+        ):
             return str(
-                function.get("name")
+                function.get(
+                    "name"
+                )
                 or ""
             )
 
         return str(
-            tool_call.get("name")
+            tool_call.get(
+                "name"
+            )
             or ""
         )
 
@@ -982,7 +1225,10 @@ CURRENT OBJECTIVE
             "function"
         )
 
-        if isinstance(function, dict):
+        if isinstance(
+            function,
+            dict,
+        ):
             raw = function.get(
                 "arguments",
                 {},
@@ -993,11 +1239,19 @@ CURRENT OBJECTIVE
                 {},
             )
 
-        if isinstance(raw, dict):
+        if isinstance(
+            raw,
+            dict,
+        ):
             return raw
 
-        if isinstance(raw, str):
+        if isinstance(
+            raw,
+            str,
+        ):
+
             try:
+
                 decoded = json.loads(
                     raw
                 )
@@ -1027,7 +1281,10 @@ CURRENT OBJECTIVE
             result,
             dict,
         ):
-            output = dict(result)
+
+            output = dict(
+                result
+            )
 
             output.setdefault(
                 "tool",
@@ -1052,9 +1309,11 @@ CURRENT OBJECTIVE
     ) -> None:
 
         try:
+
             self.cognitive_memory.remember(
                 content
             )
+
         except Exception:
             pass
 
@@ -1064,10 +1323,13 @@ CURRENT OBJECTIVE
     ) -> None:
 
         try:
+
             self.cognitive_memory.observe(
                 observation
             )
+
         except Exception:
+
             self._remember(
                 {
                     "event": "observation",
@@ -1079,7 +1341,23 @@ CURRENT OBJECTIVE
     # Status
     # ------------------------------------------------------------------
 
-    def status(self) -> Dict[str, Any]:
+    def status(
+        self,
+    ) -> Dict[str, Any]:
+
+        runtime_description = {}
+
+        try:
+            runtime_description = (
+                self.brain_runtime.describe()
+            )
+        except Exception as exc:
+            runtime_description = {
+                "runtime": "unknown",
+                "available": False,
+                "error": str(exc),
+            }
+
         return {
             "agent": self.agent_name,
             "state": self.state,
@@ -1095,9 +1373,13 @@ CURRENT OBJECTIVE
                 self.tool_adapter.definitions()
             ),
             "persistent_memory": True,
+            "runtime": runtime_description,
         }
 
-    def reset(self) -> None:
+    def reset(
+        self,
+    ) -> None:
+
         self.step_count = 0
         self.last_response = None
         self.state = "idle"
