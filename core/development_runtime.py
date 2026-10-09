@@ -16,7 +16,7 @@ It performs no network requests and executes no tools.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from .model_runtime import (
     ModelRequest,
@@ -70,7 +70,12 @@ class DevelopmentModelRuntime(ModelRuntime):
                 RuntimeCapabilities.LOCAL,
                 RuntimeCapabilities.CPU,
             ],
-            hardware="development",
+            # ModelRuntimeInfo expects a dictionary here, not a string.
+            hardware={
+                "mode": "development",
+                "local": True,
+                "network_inference": False,
+            },
             metadata={
                 "mode": "deterministic",
                 "network": False,
@@ -101,7 +106,6 @@ class DevelopmentModelRuntime(ModelRuntime):
             )
 
         messages = request.messages or []
-
         user_message = ""
 
         for message in reversed(messages):
@@ -115,7 +119,6 @@ class DevelopmentModelRuntime(ModelRuntime):
                     content = ""
 
                 user_message = str(content)
-
                 break
 
         if not user_message:
