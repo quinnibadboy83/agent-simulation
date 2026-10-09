@@ -1,73 +1,77 @@
 name: Android Local Inference Build
 
 on:
-  workflow_dispatch:
-  push:
-    paths:
-      - "android/**"
-      - ".github/workflows/android-local-inference.yml"
+workflow_dispatch:
+push:
+paths:
+- "android/**"
+- ".github/workflows/android-build.yml"
 
 permissions:
-  contents: read
+contents: read
 
 concurrency:
-  group: android-local-inference-${{ github.ref }}
-  cancel-in-progress: true
+group: android-local-inference-${{ github.ref }}
+cancel-in-progress: true
 
 jobs:
-  build-android:
-    name: Build Android Inference APK
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+build-android:
+name: Build Android Inference APK
+runs-on: ubuntu-24.04
+timeout-minutes: 45
 
-    steps:
-      - name: Check out Agent Simulation Engine
-        uses: actions/checkout@v4
+steps:
+  - name: Check out Agent Simulation Engine
+    uses: actions/checkout@v5
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
+  - name: Set up Java 17
+    uses: actions/setup-java@v5
+    with:
+      distribution: temurin
+      java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+  - name: Verify Android SDK
+    shell: bash
+    run: |
+      set -euo pipefail
+      echo "ANDROID_HOME=${ANDROID_HOME:-not set}"
+      test -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+      echo "Android SDK directory found."
 
-      - name: Get llama.cpp Android example
-        shell: bash
-        run: |
-          set -euo pipefail
+  - name: Get llama.cpp Android example
+    shell: bash
+    run: |
+      set -euo pipefail
 
-          git clone \
-            --depth 1 \
-            https://github.com/ggml-org/llama.cpp.git \
-            "$RUNNER_TEMP/llama.cpp"
+      git clone \
+        --depth 1 \
+        https://github.com/ggml-org/llama.cpp.git \
+        "$RUNNER_TEMP/llama.cpp"
 
-          test -f \
-            "$RUNNER_TEMP/llama.cpp/examples/llama.android/gradlew"
+      test -f \
+        "$RUNNER_TEMP/llama.cpp/examples/llama.android/gradlew"
 
-          cp -R \
-            "$RUNNER_TEMP/llama.cpp/examples/llama.android" \
-            "$RUNNER_TEMP/agent-simulation-android"
+      cp -R \
+        "$RUNNER_TEMP/llama.cpp/examples/llama.android" \
+        "$RUNNER_TEMP/agent-simulation-android"
 
-      - name: Build debug APK
-        shell: bash
-        run: |
-          set -euo pipefail
+  - name: Build debug APK
+    shell: bash
+    run: |
+      set -euo pipefail
 
-          cd "$RUNNER_TEMP/agent-simulation-android"
+      cd "$RUNNER_TEMP/agent-simulation-android"
+      chmod +x gradlew
 
-          chmod +x gradlew
+      ./gradlew \
+        :app:assembleDebug \
+        --no-daemon \
+        --stacktrace
 
-          ./gradlew \
-            :app:assembleDebug \
-            --no-daemon \
-            --stacktrace
-
-      - name: Upload Android APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-local-inference-proof
-          path: ${{ runner.temp }}/agent-simulation-android/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          retention-days: 7
+  - name: Upload Android APK
+    uses: actions/upload-artifact@v4
+    with:
+      name: android-local-inference-proof
+      path: ${{ runner.temp }}/agent-simulation-android/app/build/outputs/apk/debug/*.apk
+      if-no-files-found: error
+      retention-days: 7
