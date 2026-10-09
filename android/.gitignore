@@ -1,0 +1,27 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Local Android SDK configuration
+local.properties
+
+# Android Studio
+.idea/
+*.iml
+
+# Native build outputs
+.cxx/
+.externalNativeBuild/
+
+# Signing material
+*.jks
+*.keystore
+
+# Local model files can be very large.
+# Do not commit downloaded model weights.
+models/
+*.gguf
+
+# Local logs
+*.log
