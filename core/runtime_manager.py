@@ -1,22 +1,4 @@
-"""
-Runtime Manager
----------------
-
-Lifecycle management for the Agent Simulation Engine's model runtime.
-
-The RuntimeManager sits above RuntimeConfig and RuntimeFactory and
-provides one stable interface for:
-
-- creating a runtime
-- checking runtime health
-- describing the active runtime
-- replacing a runtime
-- shutting a runtime down
-- exposing safe runtime status
-
-The manager does not contain agent reasoning logic.
-"""
-
+"""Lifecycle manager for one shared model runtime."""
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
@@ -31,10 +13,6 @@ class RuntimeManagerError(RuntimeError):
 
 
 class RuntimeManager:
-    """
-    Controls the lifecycle of the application's active model runtime.
-    """
-
     def __init__(
         self,
         config: Optional[RuntimeConfig] = None,
@@ -43,227 +21,178 @@ class RuntimeManager:
         self.config = config or RuntimeConfig.from_environment()
         self._runtime = runtime
         self._started = runtime is not None
+        self._last_error: Optional[str] = None
 
     @property
     def runtime(self) -> Optional[ModelRuntime]:
-        """Return the currently active runtime."""
-
         return self._runtime
 
     @property
     def started(self) -> bool:
-        """Return whether a runtime is currently active."""
-
-        return self._started and self._runtime is not None
+        return self._started
 
     def start(self) -> ModelRuntime:
-        """
-        Create and activate the configured runtime.
-
-        If a runtime is already active, it is returned unchanged.
-        """
-
         if self._runtime is not None:
             self._started = True
             return self._runtime
 
         try:
-            self._runtime = RuntimeFactory.create(
-                runtime_type=self.config.runtime,
-                base_url=self.config.base_url,
-                model=self.config.model,
-                provider=self.config.provider,
-                api_key=self.config.api_key,
-                timeout=self.config.timeout,
-                runtime_name=self.config.runtime_name,
-            )
+            self._runtime = RuntimeFactory.create(config=self.config)
+            self._started = True
+            self._last_error = None
+            return self._runtime
         except Exception as exc:
+            self._last_error = str(exc)
             raise RuntimeManagerError(
-                f"Failed to create model runtime: {exc}"
+                f"Unable to start model runtime: {exc}"
             ) from exc
 
-        self._started = True
-
-        return self._runtime
-
     def ensure_started(self) -> ModelRuntime:
-        """
-        Return the active runtime, creating it if necessary.
-        """
+        return (
+            self._runtime
+            if self._runtime is not None
+            else self.start()
+        )
 
-        if self._runtime is None:
-            return self.start()
-
-        self._started = True
-
-        return self._runtime
-
-    async def health(self) -> ModelRuntimeInfo:
-        """
-        Check the active runtime.
-
-        The runtime is created automatically if necessary.
-        """
-
+    def health(self) -> Any:
         runtime = self.ensure_started()
 
         try:
-            return await runtime.health()
+            return runtime.health()
         except Exception as exc:
+            self._last_error = str(exc)
             raise RuntimeManagerError(
                 f"Runtime health check failed: {exc}"
             ) from exc
 
-    def describe(self) -> ModelRuntimeInfo:
-        """
-        Return static information about the active runtime.
-        """
-
+    def describe(self) -> Any:
         runtime = self.ensure_started()
 
         try:
             return runtime.describe()
         except Exception as exc:
+            self._last_error = str(exc)
             raise RuntimeManagerError(
-                f"Unable to describe runtime: {exc}"
+                f"Runtime description failed: {exc}"
             ) from exc
 
     def status(self) -> Dict[str, Any]:
-        """
-        Return safe runtime status information.
-
-        This method does not perform a network health check.
-        """
-
-        runtime_status: Dict[str, Any]
-
-        if self._runtime is None:
-            runtime_status = {
-                "active": False,
-                "runtime": None,
-            }
-        else:
+        """Return a backwards-compatible, secret-free runtime status."""
+        if self._runtime is not None:
             try:
-                description = self._runtime.describe()
+                info = self._runtime.describe()
 
-                if isinstance(description, ModelRuntimeInfo):
-                    runtime_status = {
+                if isinstance(info, ModelRuntimeInfo):
+                    result = {
                         "active": True,
-                        **description.to_dict(),
+                        **info.to_dict(),
                     }
-                elif isinstance(description, dict):
-                    runtime_status = {
+                elif isinstance(info, dict):
+                    result = {
                         "active": True,
-                        **description,
+                        **dict(info),
                     }
                 else:
-                    runtime_status = {
+                    result = {
                         "active": True,
-                        "runtime": type(
-                            self._runtime
-                        ).__name__,
+                        "runtime": type(self._runtime).__name__,
                     }
 
+                result["started"] = self._started
+                result["configuration"] = self.config.public_dict()
+
+                if self._last_error:
+                    result["error"] = self._last_error
+
+                return result
+
             except Exception as exc:
-                runtime_status = {
-                    "active": True,
-                    "runtime": type(
-                        self._runtime
-                    ).__name__,
-                    "description_error": str(exc),
-                }
+                error = str(exc)
+        else:
+            error = self._last_error
 
         return {
-            "started": self.started,
+            "started": self._started,
+            "active": False,
             "configuration": self.config.public_dict(),
-            "runtime": runtime_status,
+            "runtime": {},
+            "error": error,
         }
 
-    async def restart(
-        self,
-        config: Optional[RuntimeConfig] = None,
-    ) -> ModelRuntime:
-        """
-        Shut down the current runtime and create a new one.
-
-        An optional configuration can replace the current configuration.
-        """
-
-        await self.stop()
-
-        if config is not None:
-            self.config = config
-
+    def restart(self) -> ModelRuntime:
+        self.stop()
         return self.start()
 
-    async def replace(
-        self,
-        runtime: ModelRuntime,
-    ) -> ModelRuntime:
-        """
-        Replace the active runtime with an externally-created runtime.
-
-        This is useful for future hardware-specific runtimes such as
-        Android, desktop GPU, NPU, or embedded runtimes.
-        """
-
+    def replace(self, runtime: ModelRuntime) -> ModelRuntime:
         if runtime is None:
             raise RuntimeManagerError(
-                "Replacement runtime cannot be None."
+                "Cannot replace runtime with None."
             )
 
-        await self.stop()
-
+        self.stop()
         self._runtime = runtime
         self._started = True
-
+        self._last_error = None
         return runtime
 
-    async def stop(self) -> None:
-        """
-        Shut down the active runtime if it provides a close method.
-        """
-
-        runtime = self._runtime
-
-        self._runtime = None
+    def stop(self) -> None:
+        """Detach the runtime synchronously without leaking coroutines."""
+        runtime, self._runtime = self._runtime, None
         self._started = False
 
         if runtime is None:
             return
 
-        close = getattr(runtime, "close", None)
+        for method_name in ("close", "shutdown", "stop"):
+            method = getattr(runtime, method_name, None)
 
-        if close is None:
+            if not callable(method):
+                continue
+
+            try:
+                result = method()
+
+                if hasattr(result, "__await__"):
+                    close_method = getattr(result, "close", None)
+                    if callable(close_method):
+                        close_method()
+
+                break
+
+            except Exception as exc:
+                self._last_error = str(exc)
+                break
+
+    async def stop_async(self) -> None:
+        """Stop the runtime and await asynchronous shutdown if supported."""
+        runtime, self._runtime = self._runtime, None
+        self._started = False
+
+        if runtime is None:
             return
 
-        try:
-            result = close()
+        for method_name in (
+            "aclose",
+            "async_shutdown",
+            "close",
+            "shutdown",
+            "stop",
+        ):
+            method = getattr(runtime, method_name, None)
 
-            if hasattr(result, "__await__"):
-                await result
+            if not callable(method):
+                continue
 
-        except Exception as exc:
-            raise RuntimeManagerError(
-                f"Failed to close model runtime: {exc}"
-            ) from exc
+            try:
+                result = method()
 
-    async def close(self) -> None:
-        """
-        Alias for stop().
-        """
+                if hasattr(result, "__await__"):
+                    await result
 
-        await self.stop()
+            except Exception as exc:
+                self._last_error = str(exc)
 
+            break
 
-def create_runtime_manager(
-    config: Optional[RuntimeConfig] = None,
-) -> RuntimeManager:
-    """
-    Create a RuntimeManager.
-
-    The runtime itself is created lazily when start(), health(),
-    describe(), or ensure_started() is called.
-    """
-
-    return RuntimeManager(config=config)
+    def close(self) -> None:
+        self.stop()
