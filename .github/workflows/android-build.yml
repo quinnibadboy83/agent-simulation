@@ -31,13 +31,22 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Verify Android SDK
+      - name: Accept Android licences and install NDK
         shell: bash
         run: |
           set -euo pipefail
-          echo "ANDROID_HOME=${ANDROID_HOME:-not set}"
-          test -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          echo "Android SDK directory found."
+
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" \
+            -type f -name sdkmanager -print -quit)"
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "Could not find Android sdkmanager."
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --licenses
+          "$SDKMANAGER" --install "ndk;29.0.13113456"
 
       - name: Get llama.cpp Android example
         shell: bash
