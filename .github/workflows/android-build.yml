@@ -44,15 +44,14 @@ jobs:
             exit 1
           fi
 
-          echo "Using SDK manager: $SDKMANAGER"
-
           set +o pipefail
-          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses
+          yes | "$SDKMANAGER" \
+            --sdk_root="$SDK_ROOT" --licenses
           SDK_STATUS=${PIPESTATUS[1]}
           set -o pipefail
 
           if [ "$SDK_STATUS" -ne 0 ]; then
-            echo "ERROR: sdkmanager --licenses failed with code $SDK_STATUS"
+            echo "Android licence acceptance failed."
             exit "$SDK_STATUS"
           fi
 
@@ -73,16 +72,17 @@ jobs:
           test -f \
             "$RUNNER_TEMP/llama.cpp/examples/llama.android/gradlew"
 
-          cp -R \
-            "$RUNNER_TEMP/llama.cpp/examples/llama.android" \
-            "$RUNNER_TEMP/agent-simulation-android"
+          test -f \
+            "$RUNNER_TEMP/llama.cpp/CMakeLists.txt"
+
+          echo "Android example kept inside llama.cpp repository."
 
       - name: Build debug APK
         shell: bash
         run: |
           set -euo pipefail
 
-          cd "$RUNNER_TEMP/agent-simulation-android"
+          cd "$RUNNER_TEMP/llama.cpp/examples/llama.android"
           chmod +x gradlew
 
           ./gradlew \
@@ -94,6 +94,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-local-inference-proof
-          path: ${{ runner.temp }}/agent-simulation-android/app/build/outputs/apk/debug/*.apk
+          path: ${{ runner.temp }}/llama.cpp/examples/llama.android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 7
