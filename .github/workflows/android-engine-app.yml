@@ -1,4 +1,3 @@
-
 name: Agent Simulation Engine Android App
 
 on:
@@ -6,6 +5,7 @@ on:
   push:
     branches:
       - android/engine-app-foundation
+      - android/local-inference-integration
     paths:
       - "app/**"
       - "settings.gradle.kts"
