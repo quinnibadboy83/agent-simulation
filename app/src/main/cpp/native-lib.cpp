@@ -3,6 +3,7 @@
 #include <llama.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -40,7 +41,8 @@ std::string load_model(const std::string& path) {
         backend_initialized = true;
     }
 
-    llama_model_params model_params = llama_model_default_params();
+    llama_model_params model_params =
+        llama_model_default_params();
     model_params.n_gpu_layers = 0;
 
     engine_model = llama_model_load_from_file(
@@ -73,14 +75,14 @@ std::string load_model(const std::string& path) {
     return "READY: GGUF model loaded for CPU inference.";
 }
 
-std::string generate_text(const std::string& prompt) {
+std::string generate_text(const std::string& user_prompt) {
     std::lock_guard<std::mutex> lock(engine_mutex);
 
     if (engine_model == nullptr || engine_context == nullptr) {
         return "ERROR: Load a GGUF model first.";
     }
 
-    if (prompt.empty()) {
+    if (user_prompt.empty()) {
         return "ERROR: Prompt is empty.";
     }
 
@@ -91,30 +93,58 @@ std::string generate_text(const std::string& prompt) {
         return "ERROR: Model vocabulary is unavailable.";
     }
 
+    // Format the prompt as a ChatML conversation.
+    // SmolLM2-Instruct uses this style of user/assistant framing.
+    const std::string formatted_prompt =
+        "<|im_start|>user\n" +
+        user_prompt +
+        "<|im_end|>\n<|im_start|>assistant\n";
+
     llama_memory_clear(
         llama_get_memory(engine_context),
         true
     );
 
-    const int32_t token_capacity =
-        static_cast<int32_t>(prompt.size()) + 16;
+    // Reserve extra room because the chat template adds tokens
+    // and special-token parsing can change the token count.
+    size_t token_capacity =
+        std::max<size_t>(
+            formatted_prompt.size() * 2 + 128,
+            512
+        );
 
-    std::vector<llama_token> prompt_tokens(
-        static_cast<size_t>(token_capacity)
-    );
+    std::vector<llama_token> prompt_tokens(token_capacity);
 
-    const int32_t token_count = llama_tokenize(
+    int32_t token_count = llama_tokenize(
         vocab,
-        prompt.c_str(),
-        static_cast<int32_t>(prompt.size()),
+        formatted_prompt.c_str(),
+        static_cast<int32_t>(formatted_prompt.size()),
         prompt_tokens.data(),
-        token_capacity,
+        static_cast<int32_t>(prompt_tokens.size()),
         true,
-        false
+        true
     );
+
+    // llama_tokenize returns a negative required size when the
+    // supplied token buffer is too small.
+    if (token_count < 0) {
+        token_capacity = static_cast<size_t>(-token_count);
+        prompt_tokens.resize(token_capacity);
+
+        token_count = llama_tokenize(
+            vocab,
+            formatted_prompt.c_str(),
+            static_cast<int32_t>(formatted_prompt.size()),
+            prompt_tokens.data(),
+            static_cast<int32_t>(prompt_tokens.size()),
+            true,
+            true
+        );
+    }
 
     if (token_count <= 0) {
-        return "ERROR: Could not tokenize prompt.";
+        return "ERROR: Prompt tokenization failed (code " +
+            std::to_string(token_count) + ").";
     }
 
     prompt_tokens.resize(static_cast<size_t>(token_count));
@@ -149,7 +179,6 @@ std::string generate_text(const std::string& prompt) {
 
     std::string output;
     constexpr int max_generated_tokens = 128;
-    std::vector<llama_token> next_token(1);
 
     for (int i = 0; i < max_generated_tokens; ++i) {
         const llama_token token =
@@ -165,13 +194,16 @@ std::string generate_text(const std::string& prompt) {
             vocab,
             token,
             piece,
-            sizeof(piece),
+            static_cast<int32_t>(sizeof(piece)),
             0,
             true
         );
 
         if (piece_size > 0) {
-            output.append(piece, static_cast<size_t>(piece_size));
+            output.append(
+                piece,
+                static_cast<size_t>(piece_size)
+            );
         } else if (piece_size < 0) {
             const size_t required =
                 static_cast<size_t>(-piece_size);
@@ -195,9 +227,7 @@ std::string generate_text(const std::string& prompt) {
             }
         }
 
-        next_token[0] = token;
-
-        batch = llama_batch_get_one(next_token.data(), 1);
+        batch = llama_batch_get_one(&token, 1);
 
         if (llama_decode(engine_context, batch) != 0) {
             llama_sampler_free(sampler);
@@ -208,7 +238,7 @@ std::string generate_text(const std::string& prompt) {
     llama_sampler_free(sampler);
 
     if (output.empty()) {
-        return "Generation finished without text output.";
+        return "ERROR: Generation produced no text. The model may have stopped immediately.";
     }
 
     return output;
