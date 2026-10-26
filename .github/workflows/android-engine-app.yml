@@ -24,7 +24,7 @@ jobs:
   build:
     name: Build Android APK
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository
@@ -46,9 +46,12 @@ jobs:
         with:
           packages: "platform-tools"
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK and native build tools
         run: |
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager "platforms;android-35"
+          sdkmanager "build-tools;35.0.0"
+          sdkmanager "ndk;27.2.12479018"
+          sdkmanager "cmake;3.22.1"
           yes | sdkmanager --licenses
 
       - name: Build debug APK
