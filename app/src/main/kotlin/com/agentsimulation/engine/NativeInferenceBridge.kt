@@ -1,12 +1,13 @@
+
 package com.agentsimulation.engine
 
 /**
- * Connects the Android application to its native C++ library.
+ * Kotlin interface to the native llama.cpp inference engine.
  *
- * This is the native bridge only. Actual AI inference will be
- * integrated separately using llama.cpp.
+ * Native operations are blocking. Call model loading and generation
+ * from a background thread, not the Android main thread.
  */
-class NativeInferenceBridge {
+class NativeInferenceBridge : AutoCloseable {
 
     companion object {
         init {
@@ -14,19 +15,39 @@ class NativeInferenceBridge {
         }
     }
 
-    /**
-     * Returns the current native engine status.
-     */
-    external fun nativeGetEngineStatus(): String
+    private external fun nativeGetEngineStatus(): String
 
-    /**
-     * Provides a safe entry point for checking native library status.
-     */
+    private external fun nativeLoadModel(modelPath: String): String
+
+    private external fun nativeGenerate(prompt: String): String
+
+    private external fun nativeClose()
+
     fun getEngineStatus(): String {
         return try {
             nativeGetEngineStatus()
         } catch (error: UnsatisfiedLinkError) {
             "Native library unavailable: ${error.message}"
         }
+    }
+
+    fun loadModel(modelPath: String): String {
+        require(modelPath.isNotBlank()) {
+            "Model path cannot be empty."
+        }
+
+        return nativeLoadModel(modelPath)
+    }
+
+    fun generate(prompt: String): String {
+        require(prompt.isNotBlank()) {
+            "Prompt cannot be empty."
+        }
+
+        return nativeGenerate(prompt)
+    }
+
+    override fun close() {
+        nativeClose()
     }
 }
