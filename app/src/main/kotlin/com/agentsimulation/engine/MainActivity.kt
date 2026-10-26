@@ -1,3 +1,4 @@
+
 package com.agentsimulation.engine
 
 import android.app.Activity
@@ -26,13 +27,21 @@ class MainActivity : Activity() {
     private lateinit var diagnosticsStatus: TextView
     private lateinit var responseText: TextView
     private lateinit var promptInput: EditText
+    private lateinit var memorySearchInput: EditText
+    private lateinit var memoryResults: TextView
+    private lateinit var memoryCountText: TextView
     private lateinit var loadModelButton: Button
     private lateinit var generateButton: Button
+    private lateinit var saveMemoryButton: Button
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val inferenceExecutor: ExecutorService =
         Executors.newSingleThreadExecutor()
+
+    private val memoryStore by lazy {
+        AgentMemoryStore(applicationContext)
+    }
 
     private var inferenceEngine: NativeInferenceBridge? = null
     private var selectedUri: Uri? = null
@@ -84,6 +93,7 @@ class MainActivity : Activity() {
         diagnosticsStatus = TextView(this).apply {
             textSize = 14f
             text = "Choose a GGUF model to begin."
+            setTextIsSelectable(true)
         }
 
         responseText = TextView(this).apply {
@@ -114,6 +124,44 @@ class MainActivity : Activity() {
             }
         }
 
+        saveMemoryButton = Button(this).apply {
+            text = "Save conversation to memory"
+            isEnabled = false
+            setOnClickListener {
+                saveConversationToMemory()
+            }
+        }
+
+        memoryCountText = TextView(this).apply {
+            textSize = 14f
+            text = "Saved memories: 0"
+        }
+
+        memorySearchInput = EditText(this).apply {
+            hint = "Search saved memories"
+            singleLine = true
+        }
+
+        val searchMemoryButton = Button(this).apply {
+            text = "Search memory"
+            setOnClickListener {
+                searchMemories()
+            }
+        }
+
+        val showAllMemoryButton = Button(this).apply {
+            text = "Show all saved memories"
+            setOnClickListener {
+                displayMemories(memoryStore.getAll())
+            }
+        }
+
+        memoryResults = TextView(this).apply {
+            textSize = 14f
+            text = "Saved memories will appear here."
+            setTextIsSelectable(true)
+        }
+
         val diagnosticsButton = Button(this).apply {
             text = "Engine diagnostics"
             setOnClickListener {
@@ -133,18 +181,26 @@ class MainActivity : Activity() {
         page.addView(spacer(8))
         page.addView(promptInput)
         page.addView(generateButton)
+        page.addView(spacer(8))
+        page.addView(saveMemoryButton)
         page.addView(spacer(16))
 
-        val responseHeading = TextView(this).apply {
-            text = "LOCAL MODEL RESPONSE"
-            textSize = 14f
-            setTypeface(null, Typeface.BOLD)
-        }
-
-        page.addView(responseHeading)
+        page.addView(sectionHeading("LOCAL MODEL RESPONSE"))
         page.addView(spacer(8))
         page.addView(responseText)
-        page.addView(spacer(16))
+        page.addView(spacer(24))
+
+        page.addView(sectionHeading("PERSISTENT AGENT MEMORY"))
+        page.addView(spacer(8))
+        page.addView(memoryCountText)
+        page.addView(spacer(8))
+        page.addView(memorySearchInput)
+        page.addView(searchMemoryButton)
+        page.addView(showAllMemoryButton)
+        page.addView(spacer(8))
+        page.addView(memoryResults)
+        page.addView(spacer(24))
+
         page.addView(diagnosticsButton)
         page.addView(spacer(8))
         page.addView(diagnosticsStatus)
@@ -161,8 +217,17 @@ class MainActivity : Activity() {
 
         setContentView(scrollView)
 
+        refreshMemoryCount()
         initialiseEngine()
         refreshModelStatus()
+    }
+
+    private fun sectionHeading(text: String): TextView {
+        return TextView(this).apply {
+            this.text = text
+            textSize = 14f
+            setTypeface(null, Typeface.BOLD)
+        }
     }
 
     private fun spacer(heightDp: Int): TextView {
@@ -236,6 +301,7 @@ class MainActivity : Activity() {
 
         modelLoaded = false
         generateButton.isEnabled = false
+        saveMemoryButton.isEnabled = false
         refreshModelStatus()
 
         loadSelectedModel(uri)
@@ -244,6 +310,7 @@ class MainActivity : Activity() {
     private fun loadSelectedModel(uri: Uri) {
         loadModelButton.isEnabled = false
         generateButton.isEnabled = false
+        saveMemoryButton.isEnabled = false
 
         modelStatus.text = "Local model: Importing GGUF file..."
         runtimeStatus.text = "Inference engine: Loading model"
@@ -281,10 +348,11 @@ class MainActivity : Activity() {
                         copiedFile.name
 
                     runtimeStatus.text =
-                        "Inference engine: Ready for local CPU inference"
+                        "Inference engine: Ready for local inference"
 
                     diagnosticsStatus.text = result
                     generateButton.isEnabled = true
+                    saveMemoryButton.isEnabled = true
                     loadModelButton.isEnabled = true
                 }
             } catch (error: Throwable) {
@@ -303,6 +371,7 @@ class MainActivity : Activity() {
 
                     loadModelButton.isEnabled = true
                     generateButton.isEnabled = false
+                    saveMemoryButton.isEnabled = false
                 }
             }
         }
@@ -323,13 +392,42 @@ class MainActivity : Activity() {
 
         generateButton.isEnabled = false
         loadModelButton.isEnabled = false
+        saveMemoryButton.isEnabled = false
+
         responseText.text = "Generating locally..."
         diagnosticsStatus.text =
-            "The model is processing your prompt on this device."
+            "Searching relevant saved memories and processing locally."
 
         inferenceExecutor.execute {
             try {
-                val result = inferenceEngine?.generate(prompt)
+                val relevantMemories = memoryStore.search(prompt)
+                    .take(MAX_RELEVANT_MEMORIES)
+
+                val augmentedPrompt = if (relevantMemories.isEmpty()) {
+                    prompt
+                } else {
+                    buildString {
+                        appendLine(
+                            "Relevant saved memories from previous interactions:"
+                        )
+                        relevantMemories.forEachIndexed { index, memory ->
+                            appendLine("${index + 1}. ${memory.content}")
+                        }
+                        appendLine()
+                        appendLine(
+                            "Use these memories only when relevant to the current request."
+                        )
+                        appendLine(
+                            "If a memory conflicts with the user's current instructions, " +
+                                "follow the current instructions."
+                        )
+                        appendLine()
+                        appendLine("Current user request:")
+                        append(prompt)
+                    }
+                }
+
+                val result = inferenceEngine?.generate(augmentedPrompt)
                     ?: throw IllegalStateException(
                         "Inference engine is unavailable."
                     )
@@ -339,9 +437,11 @@ class MainActivity : Activity() {
 
                     responseText.text = result
                     diagnosticsStatus.text =
-                        "Generation finished."
+                        "Generation finished. Relevant memories used: " +
+                            relevantMemories.size
 
                     generateButton.isEnabled = modelLoaded
+                    saveMemoryButton.isEnabled = modelLoaded
                     loadModelButton.isEnabled = true
                 }
             } catch (error: Throwable) {
@@ -353,10 +453,97 @@ class MainActivity : Activity() {
                         error.message ?: error.javaClass.simpleName
 
                     generateButton.isEnabled = modelLoaded
+                    saveMemoryButton.isEnabled = modelLoaded
                     loadModelButton.isEnabled = true
                 }
             }
         }
+    }
+
+    private fun saveConversationToMemory() {
+        val prompt = promptInput.text.toString().trim()
+        val response = responseText.text.toString().trim()
+
+        if (prompt.isEmpty()) {
+            diagnosticsStatus.text =
+                "Enter a prompt before saving a conversation."
+            return
+        }
+
+        if (
+            response.isEmpty() ||
+            response == "Model responses will appear here." ||
+            response == "Generating locally..." ||
+            response == "Generation failed."
+        ) {
+            diagnosticsStatus.text =
+                "Generate a successful response before saving."
+            return
+        }
+
+        try {
+            val content = buildString {
+                appendLine("User: $prompt")
+                append("Assistant: $response")
+            }
+
+            memoryStore.save(
+                content = content,
+                category = "conversation"
+            )
+
+            refreshMemoryCount()
+            diagnosticsStatus.text =
+                "Conversation saved to private device memory."
+        } catch (error: Throwable) {
+            diagnosticsStatus.text =
+                "Memory save failed: " +
+                    (error.message ?: error.javaClass.simpleName)
+        }
+    }
+
+    private fun searchMemories() {
+        val query = memorySearchInput.text.toString().trim()
+
+        try {
+            val results = memoryStore.search(query)
+            displayMemories(results)
+
+            diagnosticsStatus.text =
+                "Memory search finished. Results: ${results.size}"
+        } catch (error: Throwable) {
+            diagnosticsStatus.text =
+                "Memory search failed: " +
+                    (error.message ?: error.javaClass.simpleName)
+        }
+    }
+
+    private fun displayMemories(
+        memories: List<AgentMemoryStore.MemoryRecord>
+    ) {
+        memoryResults.text = if (memories.isEmpty()) {
+            "No matching memories found."
+        } else {
+            buildString {
+                memories.forEachIndexed { index, memory ->
+                    appendLine("${index + 1}. [${memory.category}]")
+                    appendLine(memory.content)
+                    appendLine("Saved: ${memory.createdAt}")
+                    if (index < memories.lastIndex) {
+                        appendLine()
+                        appendLine("--------------------")
+                        appendLine()
+                    }
+                }
+            }
+        }
+
+        refreshMemoryCount()
+    }
+
+    private fun refreshMemoryCount() {
+        memoryCountText.text =
+            "Saved memories: ${memoryStore.count()}"
     }
 
     private fun showDiagnostics() {
@@ -382,6 +569,7 @@ class MainActivity : Activity() {
                     )
                     appendLine("Model selected: ${selectedUri != null}")
                     appendLine("Model loaded: $modelLoaded")
+                    appendLine("Saved memories: ${memoryStore.count()}")
                     appendLine("Native status: $status")
                     append(
                         "Imported model: " +
@@ -423,5 +611,6 @@ class MainActivity : Activity() {
     companion object {
         private const val REQUEST_MODEL = 1001
         private const val KEY_MODEL_URI = "selected_model_uri"
+        private const val MAX_RELEVANT_MEMORIES = 5
     }
 }
