@@ -93,8 +93,6 @@ std::string generate_text(const std::string& user_prompt) {
         return "ERROR: Model vocabulary is unavailable.";
     }
 
-    // Format the prompt as a ChatML conversation.
-    // SmolLM2-Instruct uses this style of user/assistant framing.
     const std::string formatted_prompt =
         "<|im_start|>user\n" +
         user_prompt +
@@ -105,8 +103,6 @@ std::string generate_text(const std::string& user_prompt) {
         true
     );
 
-    // Reserve extra room because the chat template adds tokens
-    // and special-token parsing can change the token count.
     size_t token_capacity =
         std::max<size_t>(
             formatted_prompt.size() * 2 + 128,
@@ -125,8 +121,6 @@ std::string generate_text(const std::string& user_prompt) {
         true
     );
 
-    // llama_tokenize returns a negative required size when the
-    // supplied token buffer is too small.
     if (token_count < 0) {
         token_capacity = static_cast<size_t>(-token_count);
         prompt_tokens.resize(token_capacity);
@@ -181,7 +175,7 @@ std::string generate_text(const std::string& user_prompt) {
     constexpr int max_generated_tokens = 128;
 
     for (int i = 0; i < max_generated_tokens; ++i) {
-        const llama_token token =
+        llama_token token =
             llama_sampler_sample(sampler, engine_context, -1);
 
         if (llama_vocab_is_eog(vocab, token)) {
