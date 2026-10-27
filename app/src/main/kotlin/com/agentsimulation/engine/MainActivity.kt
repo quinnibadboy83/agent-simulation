@@ -395,12 +395,23 @@ class MainActivity : Activity() {
 
         responseText.text = "Generating locally..."
         diagnosticsStatus.text =
-            "Searching relevant saved memories and processing locally."
+            "Measuring memory retrieval and local generation..."
 
         inferenceExecutor.execute {
+            val totalStartNs = System.nanoTime()
+
             try {
+                // Measure persistent-memory retrieval.
+                val memoryStartNs = System.nanoTime()
+
                 val relevantMemories = memoryStore.search(prompt)
                     .take(MAX_RELEVANT_MEMORIES)
+
+                val memorySearchMs =
+                    elapsedMilliseconds(memoryStartNs)
+
+                // Measure construction of the prompt sent to the model.
+                val promptBuildStartNs = System.nanoTime()
 
                 val augmentedPrompt = if (relevantMemories.isEmpty()) {
                     prompt
@@ -428,30 +439,54 @@ class MainActivity : Activity() {
                     }
                 }
 
+                val promptBuildMs =
+                    elapsedMilliseconds(promptBuildStartNs)
+
+                // Measure the native model call separately.
+                val generationStartNs = System.nanoTime()
+
                 val result = inferenceEngine?.generate(augmentedPrompt)
                     ?: throw IllegalStateException(
                         "Inference engine is unavailable."
                     )
 
+                val generationMs =
+                    elapsedMilliseconds(generationStartNs)
+
+                val totalMs = elapsedMilliseconds(totalStartNs)
+
                 mainHandler.post {
                     if (activityDestroyed) return@post
 
                     responseText.text = result
-                    diagnosticsStatus.text =
-                        "Generation finished. Relevant memories used: " +
-                            relevantMemories.size
+                    diagnosticsStatus.text = buildString {
+                        appendLine("Generation finished.")
+                        appendLine("Memory retrieval: ${memorySearchMs} ms")
+                        appendLine("Prompt preparation: ${promptBuildMs} ms")
+                        appendLine("Model generation: ${generationMs} ms")
+                        appendLine("Total processing: ${totalMs} ms")
+                        appendLine(
+                            "Relevant memories used: ${relevantMemories.size}"
+                        )
+                        append(
+                            "Generated characters: ${result.length}"
+                        )
+                    }
 
                     generateButton.isEnabled = modelLoaded
                     saveMemoryButton.isEnabled = modelLoaded
                     loadModelButton.isEnabled = true
                 }
             } catch (error: Throwable) {
+                val totalMs = elapsedMilliseconds(totalStartNs)
+
                 mainHandler.post {
                     if (activityDestroyed) return@post
 
                     responseText.text = "Generation failed."
                     diagnosticsStatus.text =
-                        error.message ?: error.javaClass.simpleName
+                        (error.message ?: error.javaClass.simpleName) +
+                            "\nTime before failure: ${totalMs} ms"
 
                     generateButton.isEnabled = modelLoaded
                     saveMemoryButton.isEnabled = modelLoaded
@@ -459,6 +494,10 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+
+    private fun elapsedMilliseconds(startNs: Long): Long {
+        return (System.nanoTime() - startNs) / 1_000_000L
     }
 
     private fun saveConversationToMemory() {
