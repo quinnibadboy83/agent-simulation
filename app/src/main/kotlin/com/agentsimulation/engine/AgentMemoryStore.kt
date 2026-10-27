@@ -4,16 +4,15 @@ package com.agentsimulation.engine
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 import java.util.UUID
 
 /**
  * Persistent, device-local memory store for the Agent Simulation Engine.
  *
- * Records survive application restarts and are stored in private
- * application preferences. This class does not send memory to the network.
- *
- * All public operations are synchronised so multiple callers cannot
- * overwrite one another's updates.
+ * Existing saved records retain the same JSON format. Search uses
+ * token matching and relevance scoring rather than requiring the
+ * complete query to appear verbatim in a memory.
  */
 class AgentMemoryStore(context: Context) {
 
@@ -59,6 +58,12 @@ class AgentMemoryStore(context: Context) {
         return readRecords().sortedByDescending { it.createdAt }
     }
 
+    /**
+     * Returns memories ranked by matching query terms.
+     *
+     * For example, "What is my project codename?" can match a saved
+     * conversation containing "My project codename is Falcon".
+     */
     @Synchronized
     fun search(query: String): List<MemoryRecord> {
         val cleanQuery = query.trim()
@@ -67,12 +72,109 @@ class AgentMemoryStore(context: Context) {
             return getAll()
         }
 
+        val queryTerms = tokenize(cleanQuery)
+            .filterNot { it in STOP_WORDS }
+            .toSet()
+
+        if (queryTerms.isEmpty()) {
+            return readRecords()
+                .sortedByDescending { it.createdAt }
+        }
+
         return readRecords()
-            .filter {
-                it.content.contains(cleanQuery, ignoreCase = true) ||
-                    it.category.contains(cleanQuery, ignoreCase = true)
+            .mapNotNull { memory ->
+                val contentTerms = tokenize(memory.content).toSet()
+                val categoryTerms = tokenize(memory.category).toSet()
+
+                val matchedContentTerms = queryTerms.intersect(contentTerms)
+                val matchedCategoryTerms = queryTerms.intersect(categoryTerms)
+
+                if (
+                    matchedContentTerms.isEmpty() &&
+                    matchedCategoryTerms.isEmpty()
+                ) {
+                    return@mapNotNull null
+                }
+
+                val coverage = matchedContentTerms.size.toDouble() /
+                    queryTerms.size.toDouble()
+
+                val phraseBonus = if (
+                    memory.content.contains(
+                        cleanQuery,
+                        ignoreCase = true
+                    )
+                ) {
+                    3.0
+                } else {
+                    0.0
+                }
+
+                val categoryBonus = if (
+                    matchedCategoryTerms.isNotEmpty()
+                ) {
+                    0.5
+                } else {
+                    0.0
+                }
+
+                val score = matchedContentTerms.size * 2.0 +
+                    coverage * 3.0 +
+                    phraseBonus +
+                    categoryBonus
+
+                ScoredMemory(memory, score)
             }
-            .sortedByDescending { it.createdAt }
+            .sortedWith(
+                compareByDescending<ScoredMemory> { it.score }
+                    .thenByDescending { it.memory.createdAt }
+            )
+            .map { it.memory }
+    }
+
+    /**
+     * Search results with scores, useful for diagnosing retrieval.
+     */
+    @Synchronized
+    fun searchWithScores(query: String): List<Pair<MemoryRecord, Double>> {
+        val cleanQuery = query.trim()
+
+        if (cleanQuery.isEmpty()) {
+            return getAll().map { it to 0.0 }
+        }
+
+        val queryTerms = tokenize(cleanQuery)
+            .filterNot { it in STOP_WORDS }
+            .toSet()
+
+        if (queryTerms.isEmpty()) {
+            return emptyList()
+        }
+
+        return readRecords().mapNotNull { memory ->
+            val contentTerms = tokenize(memory.content).toSet()
+            val matchedTerms = queryTerms.intersect(contentTerms)
+
+            if (matchedTerms.isEmpty()) {
+                return@mapNotNull null
+            }
+
+            val coverage = matchedTerms.size.toDouble() /
+                queryTerms.size.toDouble()
+
+            val phraseBonus = if (
+                memory.content.contains(cleanQuery, ignoreCase = true)
+            ) 3.0 else 0.0
+
+            val score = matchedTerms.size * 2.0 +
+                coverage * 3.0 +
+                phraseBonus
+
+            memory to score
+        }.sortedWith(
+            compareByDescending<Pair<MemoryRecord, Double>> { it.second }
+                .thenByDescending { it.first.createdAt }
+        )
     }
 
     @Synchronized
@@ -104,6 +206,17 @@ class AgentMemoryStore(context: Context) {
         return readRecords().size
     }
 
+    private fun tokenize(value: String): List<String> {
+        return value.lowercase(Locale.ROOT)
+            .split(Regex("[^\\p{L}\\p{N}_]+"))
+            .filter { it.isNotBlank() }
+    }
+
+    private data class ScoredMemory(
+        val memory: MemoryRecord,
+        val score: Double
+    )
+
     private fun readRecords(): List<MemoryRecord> {
         val raw = preferences.getString(KEY_RECORDS, null)
             ?: return emptyList()
@@ -114,8 +227,10 @@ class AgentMemoryStore(context: Context) {
 
             for (index in 0 until array.length()) {
                 val item = array.optJSONObject(index) ?: continue
-                val id = item.optString("id").takeIf { it.isNotBlank() }
+                val id = item.optString("id")
+                    .takeIf { it.isNotBlank() }
                     ?: continue
+
                 val content = item.optString("content").trim()
                 if (content.isEmpty()) continue
 
@@ -165,5 +280,17 @@ class AgentMemoryStore(context: Context) {
         private const val PREFERENCES_NAME = "agent_persistent_memory"
         private const val KEY_RECORDS = "memory_records"
         private const val DEFAULT_CATEGORY = "general"
+
+        private val STOP_WORDS = setOf(
+            "a", "an", "and", "are", "as", "at", "be", "been",
+            "but", "by", "can", "could", "did", "do", "does",
+            "for", "from", "had", "has", "have", "how", "i",
+            "in", "is", "it", "me", "my", "of", "on", "or",
+            "our", "please", "tell", "that", "the", "their",
+            "them", "there", "these", "they", "this", "to",
+            "us", "was", "we", "were", "what", "when", "where",
+            "which", "who", "why", "will", "with", "would",
+            "you", "your"
+        )
     }
 }
