@@ -1,4 +1,3 @@
-
 package com.agentsimulation.engine
 
 import android.app.Activity
@@ -139,7 +138,7 @@ class MainActivity : Activity() {
 
         memorySearchInput = EditText(this).apply {
             hint = "Search saved memories"
-            singleLine = true
+            setSingleLine(true)
         }
 
         val searchMemoryButton = Button(this).apply {
@@ -345,7 +344,7 @@ class MainActivity : Activity() {
 
                     modelStatus.text =
                         "Local model: Loaded successfully\n" +
-                        copiedFile.name
+                            copiedFile.name
 
                     runtimeStatus.text =
                         "Inference engine: Ready for local inference"
@@ -410,9 +409,11 @@ class MainActivity : Activity() {
                         appendLine(
                             "Relevant saved memories from previous interactions:"
                         )
+
                         relevantMemories.forEachIndexed { index, memory ->
                             appendLine("${index + 1}. ${memory.content}")
                         }
+
                         appendLine()
                         appendLine(
                             "Use these memories only when relevant to the current request."
@@ -529,6 +530,7 @@ class MainActivity : Activity() {
                     appendLine("${index + 1}. [${memory.category}]")
                     appendLine(memory.content)
                     appendLine("Saved: ${memory.createdAt}")
+
                     if (index < memories.lastIndex) {
                         appendLine()
                         appendLine("--------------------")
