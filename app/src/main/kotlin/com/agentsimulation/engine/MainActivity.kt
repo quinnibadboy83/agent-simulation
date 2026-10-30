@@ -45,11 +45,15 @@ class MainActivity : Activity() {
         AgentMemoryStore(applicationContext)
     }
 
+    @Volatile
     private var inferenceEngine: NativeInferenceBridge? = null
+
+    @Volatile
+    private var activityDestroyed = false
+
     private var selectedUri: Uri? = null
     private var importedModel: File? = null
     private var modelLoaded = false
-    private var activityDestroyed = false
 
     private val preferences by lazy {
         getSharedPreferences("engine_settings", MODE_PRIVATE)
@@ -84,7 +88,7 @@ class MainActivity : Activity() {
 
         modelStatus = TextView(this).apply {
             textSize = 16f
-            text = "Local model: Not loaded"
+            text = "Local model: Checking saved model..."
         }
 
         runtimeStatus = TextView(this).apply {
@@ -94,7 +98,7 @@ class MainActivity : Activity() {
 
         diagnosticsStatus = TextView(this).apply {
             textSize = 14f
-            text = "Choose a GGUF model to begin."
+            text = "Restoring engine..."
             setTextIsSelectable(true)
         }
 
@@ -236,9 +240,50 @@ class MainActivity : Activity() {
 
         setContentView(scrollView)
 
+        // Restore visible conversation state when Android supplies it.
+        if (savedInstanceState != null) {
+            promptInput.setText(
+                savedInstanceState.getString(STATE_PROMPT, "")
+            )
+
+            responseText.text = savedInstanceState.getString(
+                STATE_RESPONSE,
+                "Model responses will appear here."
+            )
+
+            memorySearchInput.setText(
+                savedInstanceState.getString(STATE_MEMORY_SEARCH, "")
+            )
+        }
+
         refreshMemoryCount()
         initialiseEngine()
         refreshModelStatus()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (::promptInput.isInitialized) {
+            outState.putString(
+                STATE_PROMPT,
+                promptInput.text.toString()
+            )
+        }
+
+        if (::responseText.isInitialized) {
+            outState.putString(
+                STATE_RESPONSE,
+                responseText.text.toString()
+            )
+        }
+
+        if (::memorySearchInput.isInitialized) {
+            outState.putString(
+                STATE_MEMORY_SEARCH,
+                memorySearchInput.text.toString()
+            )
+        }
+
+        super.onSaveInstanceState(outState)
     }
 
     private fun sectionHeading(text: String): TextView {
@@ -257,25 +302,108 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Initialises the native engine and restores the last imported model
+     * from app-private storage when that file is still available.
+     */
     private fun initialiseEngine() {
         runtimeStatus.text = "Inference engine: Initialising"
+        modelStatus.text = "Local model: Checking saved model..."
 
         inferenceExecutor.execute {
+            var engine: NativeInferenceBridge? = null
+
             try {
-                val engine = NativeInferenceBridge()
-                val status = engine.getEngineStatus()
+                engine = NativeInferenceBridge()
+
+                val savedPath = preferences.getString(
+                    KEY_IMPORTED_MODEL_PATH,
+                    null
+                )
+
+                var restoredFile: File? = null
+                var restoredSuccessfully = false
+                var restorationMessage = "No previously loaded model found."
+
+                if (!savedPath.isNullOrBlank()) {
+                    val savedFile = File(savedPath)
+
+                    if (savedFile.isFile && savedFile.length() > 4L) {
+                        restorationMessage = "Restoring saved GGUF model..."
+
+                        val result = engine.loadModel(
+                            savedFile.absolutePath
+                        )
+
+                        if (result.startsWith("READY:")) {
+                            restoredFile = savedFile
+                            restoredSuccessfully = true
+                            restorationMessage =
+                                "Previous GGUF model restored successfully."
+                        } else {
+                            restorationMessage =
+                                "Saved model could not be loaded: $result"
+
+                            preferences.edit()
+                                .remove(KEY_IMPORTED_MODEL_PATH)
+                                .apply()
+                        }
+                    } else {
+                        restorationMessage =
+                            "Saved model file is missing. Please select it again."
+
+                        preferences.edit()
+                            .remove(KEY_IMPORTED_MODEL_PATH)
+                            .apply()
+                    }
+                }
+
+                val nativeStatus = engine.getEngineStatus()
+
+                // Publish the engine before another queued task can use it.
+                inferenceEngine = engine
+
+                val finalRestoredFile = restoredFile
+                val finalRestoredSuccessfully = restoredSuccessfully
+                val finalRestorationMessage = restorationMessage
 
                 mainHandler.post {
                     if (activityDestroyed) {
-                        engine.close()
+                        try {
+                            engine.close()
+                        } catch (_: Throwable) {
+                        }
                         return@post
                     }
 
-                    inferenceEngine = engine
-                    runtimeStatus.text = "Inference engine: Available"
-                    diagnosticsStatus.text = status
+                    importedModel = finalRestoredFile
+                    modelLoaded = finalRestoredSuccessfully
+
+                    runtimeStatus.text = if (modelLoaded) {
+                        "Inference engine: Ready for local inference"
+                    } else {
+                        "Inference engine: Available"
+                    }
+
+                    modelStatus.text = if (modelLoaded) {
+                        "Local model: Restored successfully\n" +
+                            (importedModel?.name ?: "GGUF model")
+                    } else {
+                        "Local model: Not loaded"
+                    }
+
+                    generateButton.isEnabled = modelLoaded
+                    saveMemoryButton.isEnabled = modelLoaded
+
+                    diagnosticsStatus.text =
+                        "$finalRestorationMessage\n\n$nativeStatus"
                 }
             } catch (error: Throwable) {
+                try {
+                    engine?.close()
+                } catch (_: Throwable) {
+                }
+
                 mainHandler.post {
                     if (!activityDestroyed) {
                         runtimeStatus.text =
@@ -424,13 +552,16 @@ class MainActivity : Activity() {
 
                 preferences.edit()
                     .putString(KEY_MODEL_URI, uri.toString())
+                    .remove(KEY_IMPORTED_MODEL_PATH)
                     .apply()
 
                 modelLoaded = false
+                importedModel = null
+
                 generateButton.isEnabled = false
                 saveMemoryButton.isEnabled = false
-                refreshModelStatus()
 
+                refreshModelStatus()
                 loadSelectedModel(uri)
             }
 
@@ -474,20 +605,32 @@ class MainActivity : Activity() {
                     throw IOException(result)
                 }
 
+                // Remember the private file path for future app launches.
+                preferences.edit()
+                    .putString(
+                        KEY_IMPORTED_MODEL_PATH,
+                        copiedFile.absolutePath
+                    )
+                    .apply()
+
+                val loadedFile = copiedFile
+
                 mainHandler.post {
                     if (activityDestroyed) return@post
 
-                    importedModel = copiedFile
+                    importedModel = loadedFile
                     modelLoaded = true
 
                     modelStatus.text =
                         "Local model: Loaded successfully\n" +
-                            copiedFile.name
+                            loadedFile.name
 
                     runtimeStatus.text =
                         "Inference engine: Ready for local inference"
 
-                    diagnosticsStatus.text = result
+                    diagnosticsStatus.text =
+                        "Model loaded and saved for automatic restoration.\n$result"
+
                     generateButton.isEnabled = true
                     saveMemoryButton.isEnabled = true
                     loadModelButton.isEnabled = true
@@ -495,10 +638,16 @@ class MainActivity : Activity() {
             } catch (error: Throwable) {
                 copiedFile?.delete()
 
+                preferences.edit()
+                    .remove(KEY_IMPORTED_MODEL_PATH)
+                    .apply()
+
                 mainHandler.post {
                     if (activityDestroyed) return@post
 
                     modelLoaded = false
+                    importedModel = null
+
                     modelStatus.text = "Local model: Load failed"
                     runtimeStatus.text =
                         "Inference engine: Not ready"
@@ -799,6 +948,12 @@ class MainActivity : Activity() {
     private fun refreshModelStatus() {
         val uri = selectedUri
 
+        if (modelLoaded && importedModel != null) {
+            modelStatus.text =
+                "Local model: Loaded successfully\n${importedModel?.name}"
+            return
+        }
+
         modelStatus.text = if (uri == null) {
             "Local model: Not selected"
         } else {
@@ -828,7 +983,14 @@ class MainActivity : Activity() {
         private const val REQUEST_MODEL = 1001
         private const val REQUEST_EXPORT_MEMORY = 1002
         private const val REQUEST_IMPORT_MEMORY = 1003
+
         private const val KEY_MODEL_URI = "selected_model_uri"
+        private const val KEY_IMPORTED_MODEL_PATH = "imported_model_path"
+
+        private const val STATE_PROMPT = "saved_prompt"
+        private const val STATE_RESPONSE = "saved_response"
+        private const val STATE_MEMORY_SEARCH = "saved_memory_search"
+
         private const val MAX_RELEVANT_MEMORIES = 5
 
         private var pendingMemoryBackup: String? = null
