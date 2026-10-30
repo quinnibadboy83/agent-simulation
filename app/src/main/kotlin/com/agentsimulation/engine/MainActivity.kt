@@ -401,7 +401,7 @@ class MainActivity : Activity() {
             val totalStartNs = System.nanoTime()
 
             try {
-                // Measure persistent-memory retrieval.
+                // Retrieve relevant records from persistent memory.
                 val memoryStartNs = System.nanoTime()
 
                 val relevantMemories = memoryStore.search(prompt)
@@ -410,7 +410,7 @@ class MainActivity : Activity() {
                 val memorySearchMs =
                     elapsedMilliseconds(memoryStartNs)
 
-                // Measure construction of the prompt sent to the model.
+                // Construct a stronger memory-aware prompt.
                 val promptBuildStartNs = System.nanoTime()
 
                 val augmentedPrompt = if (relevantMemories.isEmpty()) {
@@ -418,23 +418,41 @@ class MainActivity : Activity() {
                 } else {
                     buildString {
                         appendLine(
-                            "Relevant saved memories from previous interactions:"
+                            "You are the Agent Simulation Engine. Answer the current user request directly."
                         )
+                        appendLine()
+                        appendLine("IMPORTANT SAVED-MEMORY RULES:")
+                        appendLine(
+                            "1. The saved memory records below are information from previous conversations."
+                        )
+                        appendLine(
+                            "2. In each record, the text after 'User:' is the user's own information and is the primary source of truth."
+                        )
+                        appendLine(
+                            "3. Text after 'Assistant:' is only a previous model response. Do not treat it as a user fact and do not let it override the user's message."
+                        )
+                        appendLine(
+                            "4. When the user asks for a fact, code, name, number, or project detail that appears in a saved User message, retrieve it and give the exact value."
+                        )
+                        appendLine(
+                            "5. Preserve exact spelling, capitalisation, digits, and punctuation when returning codes or names."
+                        )
+                        appendLine(
+                            "6. Do not give a generic introduction or unrelated explanation instead of answering a memory question."
+                        )
+                        appendLine(
+                            "7. If the answer is not present in the supplied memories, say that you could not find it. Never invent a value."
+                        )
+                        appendLine()
+                        appendLine("SAVED MEMORY RECORDS:")
 
                         relevantMemories.forEachIndexed { index, memory ->
-                            appendLine("${index + 1}. ${memory.content}")
+                            appendLine("MEMORY RECORD ${index + 1}:")
+                            appendLine(memory.content)
+                            appendLine()
                         }
 
-                        appendLine()
-                        appendLine(
-                            "Use these memories only when relevant to the current request."
-                        )
-                        appendLine(
-                            "If a memory conflicts with the user's current instructions, " +
-                                "follow the current instructions."
-                        )
-                        appendLine()
-                        appendLine("Current user request:")
+                        appendLine("CURRENT USER REQUEST:")
                         append(prompt)
                     }
                 }
@@ -442,7 +460,7 @@ class MainActivity : Activity() {
                 val promptBuildMs =
                     elapsedMilliseconds(promptBuildStartNs)
 
-                // Measure the native model call separately.
+                // Run native local inference.
                 val generationStartNs = System.nanoTime()
 
                 val result = inferenceEngine?.generate(augmentedPrompt)
@@ -459,6 +477,7 @@ class MainActivity : Activity() {
                     if (activityDestroyed) return@post
 
                     responseText.text = result
+
                     diagnosticsStatus.text = buildString {
                         appendLine("Generation finished.")
                         appendLine("Memory retrieval: ${memorySearchMs} ms")
@@ -468,9 +487,30 @@ class MainActivity : Activity() {
                         appendLine(
                             "Relevant memories used: ${relevantMemories.size}"
                         )
-                        append(
-                            "Generated characters: ${result.length}"
-                        )
+
+                        if (relevantMemories.isNotEmpty()) {
+                            appendLine()
+                            appendLine(
+                                "EXACT MEMORY RECORDS INJECTED INTO THE MODEL PROMPT:"
+                            )
+
+                            relevantMemories.forEachIndexed { index, memory ->
+                                appendLine()
+                                appendLine(
+                                    "MEMORY ${index + 1} [${memory.category}]:"
+                                )
+                                appendLine(memory.content.take(2000))
+
+                                if (memory.content.length > 2000) {
+                                    appendLine(
+                                        "[Record display truncated; full record remains saved.]"
+                                    )
+                                }
+                            }
+                        }
+
+                        appendLine()
+                        append("Generated characters: ${result.length}")
                     }
 
                     generateButton.isEnabled = modelLoaded
