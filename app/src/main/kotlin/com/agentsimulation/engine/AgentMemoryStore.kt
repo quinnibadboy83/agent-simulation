@@ -8,17 +8,10 @@ import java.util.Locale
 import java.util.UUID
 
 /**
- * Persistent, device-local memory store for the Agent Simulation Engine.
+ * Persistent, device-local memory store.
  *
- * Keeps the existing SharedPreferences storage format so existing
- * saved memories remain compatible.
- *
- * Improvements:
- * - Gives the user's original messages higher relevance.
- * - Prioritises exact codes, names and phrases.
- * - Reduces noise from generic question wording.
- * - Ranks memories by relevance rather than just age.
- * - Preserves existing public memory operations.
+ * Existing SharedPreferences name, key and record structure are
+ * deliberately preserved for compatibility with saved memories.
  */
 class AgentMemoryStore(context: Context) {
 
@@ -42,7 +35,6 @@ class AgentMemoryStore(context: Context) {
         content: String,
         category: String = DEFAULT_CATEGORY
     ): MemoryRecord {
-
         val cleanContent = content.trim()
 
         require(cleanContent.isNotEmpty()) {
@@ -67,33 +59,123 @@ class AgentMemoryStore(context: Context) {
 
     @Synchronized
     fun getAll(): List<MemoryRecord> {
-        return readRecords()
-            .sortedByDescending { it.createdAt }
+        return readRecords().sortedByDescending { it.createdAt }
     }
 
-    /**
-     * Search memories using relevance scoring.
-     */
     @Synchronized
     fun search(query: String): List<MemoryRecord> {
         return searchRanked(query).map { it.memory }
     }
 
-    /**
-     * Search with relevance scores for diagnostics.
-     */
     @Synchronized
     fun searchWithScores(
         query: String
     ): List<Pair<MemoryRecord, Double>> {
-
         return searchRanked(query).map {
             it.memory to it.score
         }
     }
 
-    private fun searchRanked(query: String): List<ScoredMemory> {
+    /**
+     * Export every memory into a portable JSON backup.
+     * This does not modify or remove stored memories.
+     */
+    @Synchronized
+    fun exportJson(): String {
+        val records = JSONArray()
 
+        getAll().forEach { record ->
+            records.put(
+                JSONObject().apply {
+                    put("id", record.id)
+                    put("content", record.content)
+                    put("category", record.category)
+                    put("createdAt", record.createdAt)
+                }
+            )
+        }
+
+        return JSONObject().apply {
+            put("format", BACKUP_FORMAT)
+            put("version", BACKUP_VERSION)
+            put("exportedAt", System.currentTimeMillis())
+            put("memoryCount", records.length())
+            put("memories", records)
+        }.toString(2)
+    }
+
+    /**
+     * Import a backup and merge it with existing records.
+     *
+     * Existing records are never cleared by this operation.
+     * Records with IDs already present are skipped.
+     *
+     * Returns the number of newly imported records.
+     */
+    @Synchronized
+    fun importJson(json: String): Int {
+        require(json.isNotBlank()) {
+            "Backup file is empty."
+        }
+
+        val root = JSONObject(json)
+
+        require(root.optString("format") == BACKUP_FORMAT) {
+            "This is not an Agent Simulation Engine memory backup."
+        }
+
+        require(root.optInt("version", -1) == BACKUP_VERSION) {
+            "Unsupported memory backup version."
+        }
+
+        val importedArray = root.optJSONArray("memories")
+            ?: throw IllegalArgumentException(
+                "Backup does not contain a memories list."
+            )
+
+        val existing = readRecords().toMutableList()
+        val existingIds = existing.map { it.id }.toMutableSet()
+
+        val newRecords = mutableListOf<MemoryRecord>()
+
+        for (index in 0 until importedArray.length()) {
+            val item = importedArray.optJSONObject(index) ?: continue
+
+            val id = item.optString("id").trim()
+            val content = item.optString("content").trim()
+
+            if (id.isEmpty() || content.isEmpty()) {
+                continue
+            }
+
+            if (!existingIds.add(id)) {
+                continue
+            }
+
+            newRecords.add(
+                MemoryRecord(
+                    id = id,
+                    content = content,
+                    category = item.optString(
+                        "category",
+                        DEFAULT_CATEGORY
+                    ).ifBlank { DEFAULT_CATEGORY },
+                    createdAt = item.optLong(
+                        "createdAt",
+                        System.currentTimeMillis()
+                    )
+                )
+            )
+        }
+
+        if (newRecords.isNotEmpty()) {
+            writeRecords(existing + newRecords)
+        }
+
+        return newRecords.size
+    }
+
+    private fun searchRanked(query: String): List<ScoredMemory> {
         val cleanQuery = query.trim()
 
         if (cleanQuery.isEmpty()) {
@@ -114,10 +196,7 @@ class AgentMemoryStore(context: Context) {
 
         return readRecords()
             .mapNotNull { memory ->
-
-                val userContent = extractUserContent(
-                    memory.content
-                )
+                val userContent = extractUserContent(memory.content)
 
                 val allTerms = tokenize(memory.content).toSet()
                 val userTerms = tokenize(userContent).toSet()
@@ -132,53 +211,28 @@ class AgentMemoryStore(context: Context) {
                 val coverage = matchedAll.size.toDouble() /
                     queryTerms.size.toDouble()
 
-                // User-authored information receives higher priority.
                 val userMatchScore = matchedUser.size * 4.0
-
-                // General content matches still contribute.
                 val contentMatchScore = matchedAll.size * 1.5
-
                 val coverageScore = coverage * 4.0
 
-                // Exact phrase matching is particularly valuable.
                 val normalisedMemory = normalise(memory.content)
 
                 val phraseBonus = if (
                     queryPhrase.isNotEmpty() &&
                     normalisedMemory.contains(queryPhrase)
-                ) {
-                    8.0
-                } else {
-                    0.0
-                }
+                ) 8.0 else 0.0
 
-                // Prefer matches in the original user's message.
                 val userPhrase = normalise(userContent)
 
                 val userPhraseBonus = if (
                     queryPhrase.isNotEmpty() &&
                     userPhrase.contains(queryPhrase)
-                ) {
-                    10.0
-                } else {
-                    0.0
-                }
+                ) 10.0 else 0.0
 
-                // Small bonus for records explicitly about facts.
                 val categoryBonus = if (
-                    memory.category.equals(
-                        "fact",
-                        ignoreCase = true
-                    ) ||
-                    memory.category.equals(
-                        "profile",
-                        ignoreCase = true
-                    )
-                ) {
-                    1.0
-                } else {
-                    0.0
-                }
+                    memory.category.equals("fact", true) ||
+                    memory.category.equals("profile", true)
+                ) 1.0 else 0.0
 
                 val score =
                     userMatchScore +
@@ -196,14 +250,7 @@ class AgentMemoryStore(context: Context) {
             )
     }
 
-    /**
-     * Extract the original user message from a saved conversation.
-     *
-     * This prevents an unrelated previous assistant response from
-     * receiving the same priority as the user's own information.
-     */
     private fun extractUserContent(content: String): String {
-
         val userMarker = "User:"
         val assistantMarker = "Assistant:"
 
@@ -212,9 +259,7 @@ class AgentMemoryStore(context: Context) {
             ignoreCase = true
         )
 
-        if (userStart < 0) {
-            return content
-        }
+        if (userStart < 0) return content
 
         val contentStart = userStart + userMarker.length
 
@@ -238,7 +283,6 @@ class AgentMemoryStore(context: Context) {
 
     @Synchronized
     fun delete(id: String): Boolean {
-
         val records = readRecords().toMutableList()
         val removed = records.removeAll { it.id == id }
 
@@ -262,31 +306,26 @@ class AgentMemoryStore(context: Context) {
     }
 
     private fun tokenize(value: String): List<String> {
-
         return value.lowercase(Locale.ROOT)
             .split(Regex("[^\\p{L}\\p{N}_]+"))
             .filter { it.isNotBlank() }
     }
 
     private fun normalise(value: String): String {
-
         return value.lowercase(Locale.ROOT)
             .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
             .trim()
     }
 
     private fun readRecords(): List<MemoryRecord> {
-
         val raw = preferences.getString(KEY_RECORDS, null)
             ?: return emptyList()
 
         return try {
-
             val array = JSONArray(raw)
             val records = mutableListOf<MemoryRecord>()
 
             for (index in 0 until array.length()) {
-
                 val item = array.optJSONObject(index) ?: continue
 
                 val id = item.optString("id")
@@ -311,18 +350,15 @@ class AgentMemoryStore(context: Context) {
             }
 
             records
-
         } catch (_: Exception) {
             emptyList()
         }
     }
 
     private fun writeRecords(records: List<MemoryRecord>) {
-
         val array = JSONArray()
 
         records.forEach { record ->
-
             array.put(
                 JSONObject().apply {
                     put("id", record.id)
@@ -343,7 +379,6 @@ class AgentMemoryStore(context: Context) {
     }
 
     companion object {
-
         private const val PREFERENCES_NAME =
             "agent_persistent_memory"
 
@@ -352,6 +387,11 @@ class AgentMemoryStore(context: Context) {
 
         private const val DEFAULT_CATEGORY =
             "general"
+
+        private const val BACKUP_FORMAT =
+            "agent-simulation-memory"
+
+        private const val BACKUP_VERSION = 1
 
         private val STOP_WORDS = setOf(
             "a", "an", "and", "are", "as", "at",
