@@ -62,6 +62,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        activityDestroyed = false
+
         selectedUri = preferences.getString(
             KEY_MODEL_URI,
             null
@@ -240,7 +242,6 @@ class MainActivity : Activity() {
 
         setContentView(scrollView)
 
-        // Restore visible conversation state when Android supplies it.
         if (savedInstanceState != null) {
             promptInput.setText(
                 savedInstanceState.getString(STATE_PROMPT, "")
@@ -302,19 +303,18 @@ class MainActivity : Activity() {
         }
     }
 
-    /**
-     * Initialises the native engine and restores the last imported model
-     * from app-private storage when that file is still available.
-     */
     private fun initialiseEngine() {
         runtimeStatus.text = "Inference engine: Initialising"
         modelStatus.text = "Local model: Checking saved model..."
 
         inferenceExecutor.execute {
-            var engine: NativeInferenceBridge? = null
+            var engineForCleanup: NativeInferenceBridge? = null
 
             try {
-                engine = NativeInferenceBridge()
+                // Immutable reference avoids Kotlin smart-cast problems
+                // when this engine is used inside the posted UI callback.
+                val createdEngine = NativeInferenceBridge()
+                engineForCleanup = createdEngine
 
                 val savedPath = preferences.getString(
                     KEY_IMPORTED_MODEL_PATH,
@@ -323,7 +323,8 @@ class MainActivity : Activity() {
 
                 var restoredFile: File? = null
                 var restoredSuccessfully = false
-                var restorationMessage = "No previously loaded model found."
+                var restorationMessage =
+                    "No previously loaded model found."
 
                 if (!savedPath.isNullOrBlank()) {
                     val savedFile = File(savedPath)
@@ -331,7 +332,7 @@ class MainActivity : Activity() {
                     if (savedFile.isFile && savedFile.length() > 4L) {
                         restorationMessage = "Restoring saved GGUF model..."
 
-                        val result = engine.loadModel(
+                        val result = createdEngine.loadModel(
                             savedFile.absolutePath
                         )
 
@@ -358,10 +359,10 @@ class MainActivity : Activity() {
                     }
                 }
 
-                val nativeStatus = engine.getEngineStatus()
+                val nativeStatus = createdEngine.getEngineStatus()
 
-                // Publish the engine before another queued task can use it.
-                inferenceEngine = engine
+                inferenceEngine = createdEngine
+                engineForCleanup = null
 
                 val finalRestoredFile = restoredFile
                 val finalRestoredSuccessfully = restoredSuccessfully
@@ -370,9 +371,14 @@ class MainActivity : Activity() {
                 mainHandler.post {
                     if (activityDestroyed) {
                         try {
-                            engine.close()
+                            createdEngine.close()
                         } catch (_: Throwable) {
                         }
+
+                        if (inferenceEngine === createdEngine) {
+                            inferenceEngine = null
+                        }
+
                         return@post
                     }
 
@@ -400,7 +406,7 @@ class MainActivity : Activity() {
                 }
             } catch (error: Throwable) {
                 try {
-                    engine?.close()
+                    engineForCleanup?.close()
                 } catch (_: Throwable) {
                 }
 
@@ -428,9 +434,7 @@ class MainActivity : Activity() {
 
     private fun exportMemoryBackup() {
         try {
-            val backup = memoryStore.exportJson()
-
-            pendingMemoryBackup = backup
+            pendingMemoryBackup = memoryStore.exportJson()
 
             val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
@@ -489,7 +493,6 @@ class MainActivity : Activity() {
 
     private fun readMemoryBackup(uri: Uri) {
         importMemoryButton.isEnabled = false
-
         diagnosticsStatus.text = "Reading memory backup..."
 
         inferenceExecutor.execute {
@@ -589,41 +592,40 @@ class MainActivity : Activity() {
             var copiedFile: File? = null
 
             try {
-                copiedFile = LocalModelFileManager.importModel(
+                val importedFile = LocalModelFileManager.importModel(
                     applicationContext,
                     uri
                 )
+
+                copiedFile = importedFile
 
                 val engine = inferenceEngine
                     ?: throw IllegalStateException(
                         "Native inference engine is not ready. Try again shortly."
                     )
 
-                val result = engine.loadModel(copiedFile.absolutePath)
+                val result = engine.loadModel(importedFile.absolutePath)
 
                 if (!result.startsWith("READY:")) {
                     throw IOException(result)
                 }
 
-                // Remember the private file path for future app launches.
                 preferences.edit()
                     .putString(
                         KEY_IMPORTED_MODEL_PATH,
-                        copiedFile.absolutePath
+                        importedFile.absolutePath
                     )
                     .apply()
-
-                val loadedFile = copiedFile
 
                 mainHandler.post {
                     if (activityDestroyed) return@post
 
-                    importedModel = loadedFile
+                    importedModel = importedFile
                     modelLoaded = true
 
                     modelStatus.text =
                         "Local model: Loaded successfully\n" +
-                            loadedFile.name
+                            importedFile.name
 
                     runtimeStatus.text =
                         "Inference engine: Ready for local inference"
@@ -636,8 +638,8 @@ class MainActivity : Activity() {
                     loadModelButton.isEnabled = true
                 }
             } catch (error: Throwable) {
-                copiedFile?.delete()
-
+                // Do not delete the imported file here. It may be a valid
+                // previously imported copy that the manager has reused.
                 preferences.edit()
                     .remove(KEY_IMPORTED_MODEL_PATH)
                     .apply()
@@ -747,10 +749,12 @@ class MainActivity : Activity() {
 
                 val generationStartNs = System.nanoTime()
 
-                val result = inferenceEngine?.generate(augmentedPrompt)
+                val engine = inferenceEngine
                     ?: throw IllegalStateException(
                         "Inference engine is unavailable."
                     )
+
+                val result = engine.generate(augmentedPrompt)
 
                 val generationMs =
                     elapsedMilliseconds(generationStartNs)
@@ -965,6 +969,8 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         activityDestroyed = true
 
+        // The single-thread executor ensures pending inference work finishes
+        // before native resources are released.
         inferenceExecutor.execute {
             try {
                 inferenceEngine?.close()
