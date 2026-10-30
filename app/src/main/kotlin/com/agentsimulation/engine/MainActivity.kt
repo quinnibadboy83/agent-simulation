@@ -1,3 +1,4 @@
+
 package com.agentsimulation.engine
 
 import android.app.Activity
@@ -32,6 +33,8 @@ class MainActivity : Activity() {
     private lateinit var loadModelButton: Button
     private lateinit var generateButton: Button
     private lateinit var saveMemoryButton: Button
+    private lateinit var exportMemoryButton: Button
+    private lateinit var importMemoryButton: Button
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -155,6 +158,20 @@ class MainActivity : Activity() {
             }
         }
 
+        exportMemoryButton = Button(this).apply {
+            text = "Export memory backup"
+            setOnClickListener {
+                exportMemoryBackup()
+            }
+        }
+
+        importMemoryButton = Button(this).apply {
+            text = "Import memory backup"
+            setOnClickListener {
+                importMemoryBackup()
+            }
+        }
+
         memoryResults = TextView(this).apply {
             textSize = 14f
             text = "Saved memories will appear here."
@@ -196,6 +213,9 @@ class MainActivity : Activity() {
         page.addView(memorySearchInput)
         page.addView(searchMemoryButton)
         page.addView(showAllMemoryButton)
+        page.addView(spacer(8))
+        page.addView(exportMemoryButton)
+        page.addView(importMemoryButton)
         page.addView(spacer(8))
         page.addView(memoryResults)
         page.addView(spacer(24))
@@ -278,6 +298,109 @@ class MainActivity : Activity() {
         startActivityForResult(intent, REQUEST_MODEL)
     }
 
+    private fun exportMemoryBackup() {
+        try {
+            val backup = memoryStore.exportJson()
+
+            pendingMemoryBackup = backup
+
+            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/json"
+                putExtra(
+                    Intent.EXTRA_TITLE,
+                    "agent-simulation-memory-backup.json"
+                )
+            }
+
+            startActivityForResult(intent, REQUEST_EXPORT_MEMORY)
+        } catch (error: Throwable) {
+            diagnosticsStatus.text =
+                "Memory export preparation failed: " +
+                    (error.message ?: error.javaClass.simpleName)
+        }
+    }
+
+    private fun importMemoryBackup() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+        }
+
+        startActivityForResult(intent, REQUEST_IMPORT_MEMORY)
+    }
+
+    private fun writeMemoryBackup(uri: Uri) {
+        val backup = pendingMemoryBackup
+            ?: run {
+                diagnosticsStatus.text =
+                    "No prepared memory backup was found."
+                return
+            }
+
+        try {
+            contentResolver.openOutputStream(uri)?.use { output ->
+                output.write(backup.toByteArray(Charsets.UTF_8))
+                output.flush()
+            } ?: throw IOException(
+                "Could not open the selected backup destination."
+            )
+
+            diagnosticsStatus.text =
+                "Memory backup exported successfully.\n" +
+                    "Records included: ${memoryStore.count()}"
+
+        } catch (error: Throwable) {
+            diagnosticsStatus.text =
+                "Memory backup export failed: " +
+                    (error.message ?: error.javaClass.simpleName)
+        } finally {
+            pendingMemoryBackup = null
+        }
+    }
+
+    private fun readMemoryBackup(uri: Uri) {
+        importMemoryButton.isEnabled = false
+
+        diagnosticsStatus.text = "Reading memory backup..."
+
+        inferenceExecutor.execute {
+            try {
+                val json = contentResolver.openInputStream(uri)?.use {
+                    it.bufferedReader(Charsets.UTF_8).readText()
+                } ?: throw IOException(
+                    "Could not read the selected backup file."
+                )
+
+                val importedCount = memoryStore.importJson(json)
+
+                mainHandler.post {
+                    if (activityDestroyed) return@post
+
+                    refreshMemoryCount()
+                    displayMemories(memoryStore.getAll())
+
+                    diagnosticsStatus.text =
+                        "Memory backup imported successfully.\n" +
+                            "New records imported: $importedCount\n" +
+                            "Total saved memories: ${memoryStore.count()}"
+
+                    importMemoryButton.isEnabled = true
+                }
+            } catch (error: Throwable) {
+                mainHandler.post {
+                    if (activityDestroyed) return@post
+
+                    diagnosticsStatus.text =
+                        "Memory import failed: " +
+                            (error.message ?: error.javaClass.simpleName)
+
+                    importMemoryButton.isEnabled = true
+                }
+            }
+        }
+    }
+
     @Deprecated("Uses the Android activity result callback")
     override fun onActivityResult(
         requestCode: Int,
@@ -286,24 +409,39 @@ class MainActivity : Activity() {
     ) {
         super.onActivityResult(requestCode, resultCode, data)
 
-        if (requestCode != REQUEST_MODEL || resultCode != RESULT_OK) {
+        if (resultCode != RESULT_OK) {
+            if (requestCode == REQUEST_EXPORT_MEMORY) {
+                pendingMemoryBackup = null
+            }
             return
         }
 
         val uri = data?.data ?: return
 
-        selectedUri = uri
+        when (requestCode) {
+            REQUEST_MODEL -> {
+                selectedUri = uri
 
-        preferences.edit()
-            .putString(KEY_MODEL_URI, uri.toString())
-            .apply()
+                preferences.edit()
+                    .putString(KEY_MODEL_URI, uri.toString())
+                    .apply()
 
-        modelLoaded = false
-        generateButton.isEnabled = false
-        saveMemoryButton.isEnabled = false
-        refreshModelStatus()
+                modelLoaded = false
+                generateButton.isEnabled = false
+                saveMemoryButton.isEnabled = false
+                refreshModelStatus()
 
-        loadSelectedModel(uri)
+                loadSelectedModel(uri)
+            }
+
+            REQUEST_EXPORT_MEMORY -> {
+                writeMemoryBackup(uri)
+            }
+
+            REQUEST_IMPORT_MEMORY -> {
+                readMemoryBackup(uri)
+            }
+        }
     }
 
     private fun loadSelectedModel(uri: Uri) {
@@ -401,7 +539,6 @@ class MainActivity : Activity() {
             val totalStartNs = System.nanoTime()
 
             try {
-                // Retrieve relevant records from persistent memory.
                 val memoryStartNs = System.nanoTime()
 
                 val relevantMemories = memoryStore.search(prompt)
@@ -410,7 +547,6 @@ class MainActivity : Activity() {
                 val memorySearchMs =
                     elapsedMilliseconds(memoryStartNs)
 
-                // Construct a stronger memory-aware prompt.
                 val promptBuildStartNs = System.nanoTime()
 
                 val augmentedPrompt = if (relevantMemories.isEmpty()) {
@@ -423,25 +559,25 @@ class MainActivity : Activity() {
                         appendLine()
                         appendLine("IMPORTANT SAVED-MEMORY RULES:")
                         appendLine(
-                            "1. The saved memory records below are information from previous conversations."
+                            "1. Saved records are information from previous conversations."
                         )
                         appendLine(
-                            "2. In each record, the text after 'User:' is the user's own information and is the primary source of truth."
+                            "2. Text after 'User:' is the user's own information and is the primary source of truth."
                         )
                         appendLine(
-                            "3. Text after 'Assistant:' is only a previous model response. Do not treat it as a user fact and do not let it override the user's message."
+                            "3. Text after 'Assistant:' is a previous model response, not a user fact."
                         )
                         appendLine(
-                            "4. When the user asks for a fact, code, name, number, or project detail that appears in a saved User message, retrieve it and give the exact value."
+                            "4. If a requested fact, code, name or project detail appears in a saved User message, return the exact value."
                         )
                         appendLine(
-                            "5. Preserve exact spelling, capitalisation, digits, and punctuation when returning codes or names."
+                            "5. Preserve exact spelling, capitalisation, digits and punctuation."
                         )
                         appendLine(
-                            "6. Do not give a generic introduction or unrelated explanation instead of answering a memory question."
+                            "6. Do not give a generic introduction instead of answering a memory question."
                         )
                         appendLine(
-                            "7. If the answer is not present in the supplied memories, say that you could not find it. Never invent a value."
+                            "7. If the answer is absent, say it was not found. Never invent a value."
                         )
                         appendLine()
                         appendLine("SAVED MEMORY RECORDS:")
@@ -460,7 +596,6 @@ class MainActivity : Activity() {
                 val promptBuildMs =
                     elapsedMilliseconds(promptBuildStartNs)
 
-                // Run native local inference.
                 val generationStartNs = System.nanoTime()
 
                 val result = inferenceEngine?.generate(augmentedPrompt)
@@ -691,7 +826,11 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQUEST_MODEL = 1001
+        private const val REQUEST_EXPORT_MEMORY = 1002
+        private const val REQUEST_IMPORT_MEMORY = 1003
         private const val KEY_MODEL_URI = "selected_model_uri"
         private const val MAX_RELEVANT_MEMORIES = 5
+
+        private var pendingMemoryBackup: String? = null
     }
 }
