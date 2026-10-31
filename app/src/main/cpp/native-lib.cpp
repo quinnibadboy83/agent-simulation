@@ -15,6 +15,8 @@ llama_model* engine_model = nullptr;
 llama_context* engine_context = nullptr;
 bool backend_initialized = false;
 
+constexpr int MAX_GENERATED_TOKENS = 512;
+
 void release_model() {
     if (engine_context != nullptr) {
         llama_free(engine_context);
@@ -43,6 +45,7 @@ std::string load_model(const std::string& path) {
 
     llama_model_params model_params =
         llama_model_default_params();
+
     model_params.n_gpu_layers = 0;
 
     engine_model = llama_model_load_from_file(
@@ -149,6 +152,25 @@ std::string generate_text(const std::string& user_prompt) {
         return "ERROR: Prompt exceeds the model context limit.";
     }
 
+    // Reserve context space for generation.
+    // Never allow generated tokens to exceed available context.
+
+    const size_t available_context_tokens =
+        static_cast<size_t>(context_size) -
+        prompt_tokens.size() - 1;
+
+    const int max_generated_tokens =
+        static_cast<int>(
+            std::min<size_t>(
+                MAX_GENERATED_TOKENS,
+                available_context_tokens
+            )
+        );
+
+    if (max_generated_tokens <= 0) {
+        return "ERROR: No context space remains for generation.";
+    }
+
     llama_batch batch = llama_batch_get_one(
         prompt_tokens.data(),
         static_cast<int32_t>(prompt_tokens.size())
@@ -172,9 +194,9 @@ std::string generate_text(const std::string& user_prompt) {
     );
 
     std::string output;
-    constexpr int max_generated_tokens = 128;
 
     for (int i = 0; i < max_generated_tokens; ++i) {
+
         llama_token token =
             llama_sampler_sample(sampler, engine_context, -1);
 
@@ -199,6 +221,7 @@ std::string generate_text(const std::string& user_prompt) {
                 static_cast<size_t>(piece_size)
             );
         } else if (piece_size < 0) {
+
             const size_t required =
                 static_cast<size_t>(-piece_size);
 
@@ -250,6 +273,7 @@ std::string from_java_string(JNIEnv* env, jstring value) {
     }
 
     std::string result(chars);
+
     env->ReleaseStringUTFChars(value, chars);
 
     return result;
