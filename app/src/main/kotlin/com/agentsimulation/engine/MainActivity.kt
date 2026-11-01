@@ -191,6 +191,16 @@ class MainActivity : Activity() {
             }
         }
 
+        // New Researcher entry point. Existing engine controls are preserved.
+        val researchButton = Button(this).apply {
+            text = "Open Researcher"
+            setOnClickListener {
+                startActivity(
+                    Intent(this@MainActivity, ResearchActivity::class.java)
+                )
+            }
+        }
+
         page.addView(title)
         page.addView(spacer(8))
         page.addView(subtitle)
@@ -226,6 +236,9 @@ class MainActivity : Activity() {
         page.addView(memoryResults)
         page.addView(spacer(24))
 
+        // Researcher is integrated into the original main screen.
+        page.addView(researchButton)
+        page.addView(spacer(8))
         page.addView(diagnosticsButton)
         page.addView(spacer(8))
         page.addView(diagnosticsStatus)
@@ -311,8 +324,6 @@ class MainActivity : Activity() {
             var engineForCleanup: NativeInferenceBridge? = null
 
             try {
-                // Immutable reference avoids Kotlin smart-cast problems
-                // when this engine is used inside the posted UI callback.
                 val createdEngine = NativeInferenceBridge()
                 engineForCleanup = createdEngine
 
@@ -589,15 +600,11 @@ class MainActivity : Activity() {
             "Copying the model into private app storage."
 
         inferenceExecutor.execute {
-            var copiedFile: File? = null
-
             try {
                 val importedFile = LocalModelFileManager.importModel(
                     applicationContext,
                     uri
                 )
-
-                copiedFile = importedFile
 
                 val engine = inferenceEngine
                     ?: throw IllegalStateException(
@@ -638,8 +645,6 @@ class MainActivity : Activity() {
                     loadModelButton.isEnabled = true
                 }
             } catch (error: Throwable) {
-                // Do not delete the imported file here. It may be a valid
-                // previously imported copy that the manager has reused.
                 preferences.edit()
                     .remove(KEY_IMPORTED_MODEL_PATH)
                     .apply()
@@ -969,8 +974,6 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         activityDestroyed = true
 
-        // The single-thread executor ensures pending inference work finishes
-        // before native resources are released.
         inferenceExecutor.execute {
             try {
                 inferenceEngine?.close()
