@@ -1,5 +1,3 @@
-
-<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -10,7 +8,6 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
-        <!-- Main application screen: the only launcher activity -->
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
@@ -23,7 +20,6 @@
 
         </activity>
 
-        <!-- Researcher opens from inside the main application -->
         <activity
             android:name=".ResearchActivity"
             android:label="Free Researcher"
