@@ -7,6 +7,7 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.Locale
 
 data class FreeResearchSource(
     val provider: String,
@@ -61,10 +62,8 @@ data class FreeResearchReport(
 }
 
 /**
- * Free public-source research.
- *
- * No paid search API key is required.
- * Call search() from a background thread, never the UI thread.
+ * Public-source research. No paid search key is required.
+ * Call search() on a background thread.
  */
 class FreeResearchService {
 
@@ -79,53 +78,88 @@ class FreeResearchService {
             "Research question must be 400 characters or fewer."
         }
 
-        val results = mutableListOf<FreeResearchSource>()
+        val intent = ResearchIntent.from(cleanQuery)
         val notes = mutableListOf<String>()
+        val collected = mutableListOf<FreeResearchSource>()
 
-        try {
-            results.addAll(searchWikipedia(cleanQuery))
-        } catch (error: Exception) {
-            notes.add("Wikipedia unavailable: ${safeMessage(error)}")
+        if (intent.githubOnly) {
+            searchGitHub(intent, collected, notes)
+
+            notes.add(
+                "Only GitHub was searched because the request specifically asked for GitHub projects or repositories."
+            )
+        } else {
+            try {
+                val found = searchWikipedia(intent.wikipediaQuery)
+                val relevant = found.filter {
+                    isRelevant(it, intent)
+                }
+
+                collected.addAll(relevant)
+
+                if (found.isNotEmpty() && relevant.isEmpty()) {
+                    notes.add(
+                        "Wikipedia returned results, but none passed the relevance filter."
+                    )
+                } else if (found.isEmpty()) {
+                    notes.add("Wikipedia returned no matching results.")
+                }
+            } catch (error: Exception) {
+                notes.add(
+                    "Wikipedia unavailable: ${safeMessage(error)}"
+                )
+            }
+
+            try {
+                val found = searchArxiv(intent.arxivQuery)
+                val relevant = found.filter {
+                    isRelevant(it, intent)
+                }
+
+                collected.addAll(relevant)
+
+                if (found.isNotEmpty() && relevant.isEmpty()) {
+                    notes.add(
+                        "arXiv returned results, but none passed the relevance filter."
+                    )
+                } else if (found.isEmpty()) {
+                    notes.add("arXiv returned no matching results.")
+                }
+            } catch (error: Exception) {
+                notes.add(
+                    "arXiv unavailable: ${safeMessage(error)}"
+                )
+            }
+
+            searchGitHub(intent, collected, notes)
         }
 
-        try {
-            results.addAll(searchArxiv(cleanQuery))
-        } catch (error: Exception) {
-            notes.add("arXiv unavailable: ${safeMessage(error)}")
-        }
-
-        try {
-            results.addAll(searchGitHub(cleanQuery))
-        } catch (error: Exception) {
-            notes.add("GitHub unavailable: ${safeMessage(error)}")
-        }
-
-        val uniqueResults = results
-            .distinctBy { it.url }
+        val unique = collected
+            .distinctBy { it.url.trimEnd('/') }
             .take(MAX_TOTAL_RESULTS)
 
-        if (uniqueResults.isEmpty()) {
+        notes.add(
+            "Relevance screening uses titles and available descriptions or abstracts. It can miss useful sources and is not a full credibility check."
+        )
+
+        notes.add(
+            "Sources have not been independently verified. Open the original pages and check their contents and dates."
+        )
+
+        notes.add(
+            "Only the listed public sources were searched; this is not a complete search of the internet."
+        )
+
+        if (unique.isEmpty()) {
             throw IOException(
-                "No usable results were retrieved. " +
+                "No relevant sources were retrieved. " +
                     notes.joinToString(" ")
             )
         }
 
-        notes.add(
-            "Only Wikipedia, arXiv and GitHub were searched. " +
-                "This is not a complete search of the internet."
-        )
-        notes.add(
-            "Search results are not independently verified. " +
-                "Check original pages and publication dates."
-        )
-        notes.add(
-            "GitHub's unauthenticated API has rate limits."
-        )
-
         return FreeResearchReport(
             query = cleanQuery,
-            sources = uniqueResults,
+            sources = unique,
             providerNotes = notes
         )
     }
@@ -137,9 +171,10 @@ class FreeResearchService {
             "https://en.wikipedia.org/w/api.php" +
                 "?action=query&list=search" +
                 "&srsearch=${encode(query)}" +
-                "&srlimit=3&format=json&utf8=1"
+                "&srlimit=6&format=json&utf8=1"
 
         val root = JSONObject(getText(address))
+
         val items = root.optJSONObject("query")
             ?.optJSONArray("search")
             ?: return emptyList()
@@ -152,15 +187,12 @@ class FreeResearchService {
 
             if (title.isBlank()) continue
 
-            val pageUrl =
-                "https://en.wikipedia.org/wiki/" +
-                    encode(title).replace("+", "_")
-
             output.add(
                 FreeResearchSource(
                     provider = "Wikipedia",
                     title = title,
-                    url = pageUrl,
+                    url = "https://en.wikipedia.org/wiki/" +
+                        encode(title).replace("+", "_"),
                     summary = cleanHtml(
                         item.optString("snippet")
                     ).take(MAX_SUMMARY_CHARS)
@@ -176,8 +208,8 @@ class FreeResearchService {
     ): List<FreeResearchSource> {
         val address =
             "https://export.arxiv.org/api/query" +
-                "?search_query=all:${encode(query)}" +
-                "&start=0&max_results=3&sortBy=relevance"
+                "?search_query=${encode(query)}" +
+                "&start=0&max_results=8&sortBy=relevance"
 
         val parser = Xml.newPullParser()
         parser.setInput(getText(address).reader())
@@ -192,7 +224,7 @@ class FreeResearchService {
 
         while (
             event != XmlPullParser.END_DOCUMENT &&
-            output.size < 3
+            output.size < MAX_PROVIDER_RESULTS
         ) {
             when (event) {
                 XmlPullParser.START_TAG -> {
@@ -229,7 +261,10 @@ class FreeResearchService {
                 }
 
                 XmlPullParser.END_TAG -> {
-                    if (parser.name == "entry" && inEntry) {
+                    if (
+                        parser.name == "entry" &&
+                        inEntry
+                    ) {
                         if (
                             title.isNotBlank() &&
                             id.startsWith("http")
@@ -258,12 +293,73 @@ class FreeResearchService {
     }
 
     private fun searchGitHub(
+        intent: ResearchIntent,
+        results: MutableList<FreeResearchSource>,
+        notes: MutableList<String>
+    ) {
+        val found = mutableListOf<FreeResearchSource>()
+        val errors = mutableListOf<String>()
+
+        for (query in intent.githubQueries) {
+            try {
+                found.addAll(searchGitHubQuery(query))
+
+                if (found.size >= MAX_PROVIDER_RESULTS) {
+                    break
+                }
+            } catch (error: Exception) {
+                errors.add(
+                    "$query: ${safeMessage(error)}"
+                )
+            }
+        }
+
+        val unique = found.distinctBy {
+            it.url.trimEnd('/')
+        }
+
+        val relevant = unique.filter {
+            isRelevant(
+                source = it,
+                intent = intent,
+                githubResult = true
+            )
+        }
+
+        results.addAll(
+            relevant.take(MAX_PROVIDER_RESULTS)
+        )
+
+        if (relevant.isEmpty()) {
+            when {
+                errors.isNotEmpty() -> notes.add(
+                    "GitHub search failed or returned no usable results: " +
+                        errors.joinToString(" | ")
+                )
+
+                unique.isEmpty() -> notes.add(
+                    "GitHub returned no repositories for the targeted queries."
+                )
+
+                else -> notes.add(
+                    "GitHub returned ${unique.size} repositories, but none passed relevance screening."
+                )
+            }
+        } else if (errors.isNotEmpty()) {
+            notes.add(
+                "Some GitHub queries failed: " +
+                    errors.joinToString(" | ")
+            )
+        }
+    }
+
+    private fun searchGitHubQuery(
         query: String
     ): List<FreeResearchSource> {
         val address =
             "https://api.github.com/search/repositories" +
                 "?q=${encode(query)}" +
-                "&sort=updated&order=desc&per_page=3"
+                "&sort=stars&order=desc&per_page=8"
 
         val root = JSONObject(getText(address))
         val items = root.optJSONArray("items")
@@ -274,24 +370,28 @@ class FreeResearchService {
         for (i in 0 until items.length()) {
             val item = items.optJSONObject(i) ?: continue
 
-            val title = item.optString("full_name").trim()
+            val name = item.optString("full_name").trim()
             val pageUrl = item.optString("html_url").trim()
 
             if (
-                title.isBlank() ||
+                name.isBlank() ||
                 !pageUrl.startsWith("https://github.com/")
             ) {
                 continue
             }
 
             val description = item.optString("description")
-                .ifBlank { "No repository description supplied." }
+                .ifBlank {
+                    "No repository description supplied."
+                }
 
             val language = item.optString("language")
             val stars = item.optInt("stargazers_count", 0)
 
             val summary = buildString {
-                append(description.take(MAX_SUMMARY_CHARS - 100))
+                append(
+                    description.take(MAX_SUMMARY_CHARS - 100)
+                )
 
                 if (language.isNotBlank()) {
                     appendLine()
@@ -305,7 +405,7 @@ class FreeResearchService {
             output.add(
                 FreeResearchSource(
                     provider = "GitHub",
-                    title = title,
+                    title = name,
                     url = pageUrl,
                     summary = summary
                 )
@@ -313,6 +413,96 @@ class FreeResearchService {
         }
 
         return output
+    }
+
+    private fun isRelevant(
+        source: FreeResearchSource,
+        intent: ResearchIntent,
+        githubResult: Boolean = false
+    ): Boolean {
+        val text = normalize(
+            "${source.title} ${source.summary} ${source.url}"
+        )
+
+        val mobileTerms = listOf(
+            "android",
+            "mobile",
+            "smartphone",
+            "phone",
+            "on device",
+            "on-device",
+            "edge device",
+            "mediapipe",
+            "termux"
+        )
+
+        val modelTerms = listOf(
+            "llm",
+            "large language model",
+            "language model",
+            "small language",
+            "generative ai",
+            "on device inference",
+            "on-device inference",
+            "llama",
+            "gguf",
+            "llamacpp",
+            "llama cpp",
+            "smollm",
+            "gemma",
+            "phi",
+            "qwen",
+            "local inference",
+            "local model",
+            "machine learning model"
+        )
+
+        val mobileMatch = mobileTerms.any {
+            text.contains(normalize(it))
+        }
+
+        val modelMatch = modelTerms.any {
+            text.contains(normalize(it))
+        }
+
+        if (
+            intent.githubOnly &&
+            githubResult &&
+            intent.requiresMobile &&
+            intent.requiresLanguageModel
+        ) {
+            // GitHub repository descriptions can be very short.
+            // Keep results returned by targeted Android/model searches
+            // when they contain clear inference or model indicators.
+            return mobileMatch ||
+                modelMatch ||
+                text.contains("inference") ||
+                text.contains("gguf") ||
+                text.contains("llama")
+        }
+
+        if (intent.requiresMobile && !mobileMatch) {
+            return false
+        }
+
+        if (intent.requiresLanguageModel && !modelMatch) {
+            return false
+        }
+
+        val usefulTerms = intent.keyTerms.filter {
+            it.length >= 4
+        }
+
+        if (usefulTerms.isEmpty()) {
+            return mobileMatch || modelMatch || githubResult
+        }
+
+        val overlap = usefulTerms.count {
+            text.contains(normalize(it))
+        }
+
+        return overlap >= 1 ||
+            (githubResult && (mobileMatch || modelMatch))
     }
 
     private fun getText(address: String): String {
@@ -331,7 +521,7 @@ class FreeResearchService {
 
             connection.setRequestProperty(
                 "User-Agent",
-                "AgentSimulationEngine/0.1"
+                "AgentSimulationEngine/0.3 (free public-source research)"
             )
 
             val status = connection.responseCode
@@ -342,15 +532,28 @@ class FreeResearchService {
                 connection.errorStream
             }
 
-            val body = stream?.bufferedReader(Charsets.UTF_8)
+            val body = stream
+                ?.bufferedReader(Charsets.UTF_8)
                 ?.use { it.readText() }
                 ?: throw IOException(
                     "Public source returned HTTP $status."
                 )
 
             if (status !in 200..299) {
+                val detail = try {
+                    JSONObject(body).optString("message")
+                } catch (_: Exception) {
+                    ""
+                }
+
+                val suffix = if (detail.isNotBlank()) {
+                    ": ${detail.take(120)}"
+                } else {
+                    ""
+                }
+
                 throw IOException(
-                    "Public source returned HTTP $status."
+                    "Public source returned HTTP $status$suffix"
                 )
             }
 
@@ -382,10 +585,151 @@ class FreeResearchService {
         return URLEncoder.encode(value, "UTF-8")
     }
 
+    private fun normalize(value: String): String {
+        return value.lowercase(Locale.ROOT)
+            .replace(Regex("[^a-z0-9+#.-]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
     private fun safeMessage(error: Throwable): String {
         return (
             error.message ?: error.javaClass.simpleName
         ).take(180)
+    }
+
+    private data class ResearchIntent(
+        val keyTerms: List<String>,
+        val requiresMobile: Boolean,
+        val requiresLanguageModel: Boolean,
+        val githubOnly: Boolean,
+        val wikipediaQuery: String,
+        val arxivQuery: String,
+        val githubQueries: List<String>
+    ) {
+        companion object {
+            fun from(query: String): ResearchIntent {
+                val normalized = query.lowercase(Locale.ROOT)
+
+                val requiresMobile = Regex(
+                    "\\b(android|mobile|smartphone|smartphones|phone|phones|on.device|on-device)\\b"
+                ).containsMatchIn(normalized)
+
+                val requiresLanguageModel = Regex(
+                    "\\b(llm|llms|language model|language models|small ai|small model|small models|generative ai|local ai|local inference|llama|gguf)\\b"
+                ).containsMatchIn(normalized)
+
+                val explicitlyGithub = Regex(
+                    "\\b(github|repositories|repository|repos|projects|project)\\b"
+                ).containsMatchIn(normalized)
+
+                val mentionsOtherProvider = Regex(
+                    "\\b(arxiv|wikipedia)\\b"
+                ).containsMatchIn(normalized)
+
+                val githubOnly =
+                    explicitlyGithub && !mentionsOtherProvider
+
+                val stopWords = setOf(
+                    "about", "above", "after", "also", "and", "are",
+                    "each", "explain", "find", "from", "give", "help",
+                    "how", "into", "latest", "local", "locally", "more",
+                    "most", "other", "please", "project", "projects",
+                    "provide", "recent", "return", "running", "search",
+                    "small", "some", "that", "their", "these", "this",
+                    "those", "using", "what", "when", "where", "which",
+                    "with", "would", "your"
+                )
+
+                val keyTerms = Regex("[a-zA-Z0-9+#.-]{3,}")
+                    .findAll(query)
+                    .map {
+                        it.value.lowercase(Locale.ROOT)
+                    }
+                    .filter {
+                        it !in stopWords
+                    }
+                    .distinct()
+                    .take(12)
+                    .toList()
+
+                val wikipediaQuery = when {
+                    requiresMobile && requiresLanguageModel ->
+                        "Android on-device language models local AI inference"
+
+                    requiresMobile ->
+                        "Android mobile on-device AI"
+
+                    requiresLanguageModel ->
+                        "small language models local inference"
+
+                    else ->
+                        keyTerms.take(6).joinToString(" ")
+                }.ifBlank {
+                    query.take(100)
+                }
+
+                val arxivQuery = when {
+                    requiresMobile && requiresLanguageModel ->
+                        "(all:android OR all:mobile OR all:smartphone) AND (all:llm OR all:\"language model\" OR all:inference OR all:llama)"
+
+                    requiresLanguageModel ->
+                        "(all:llm OR all:\"language model\" OR all:inference OR all:llama)"
+
+                    else ->
+                        keyTerms.take(5).joinToString(" AND ") {
+                            "all:$it"
+                        }
+                }
+
+                val githubQueries = buildList {
+                    if (
+                        requiresMobile &&
+                        requiresLanguageModel
+                    ) {
+                        add("android llm")
+                        add("android llama.cpp")
+                        add("on-device language model")
+                        add("Android GGUF inference")
+                    } else if (requiresMobile) {
+                        add("android on-device AI")
+                        add("android machine learning inference")
+                    } else if (requiresLanguageModel) {
+                        add("local language model inference")
+                        add("llama.cpp")
+                        add("GGUF inference")
+                    } else {
+                        val compact = keyTerms
+                            .take(4)
+                            .joinToString(" ")
+
+                        if (compact.isNotBlank()) {
+                            add(compact)
+                        }
+
+                        val shortQuery = keyTerms
+                            .take(2)
+                            .joinToString(" ")
+
+                        if (shortQuery.isNotBlank()) {
+                            add(shortQuery)
+                        }
+                    }
+                }.filter {
+                    it.isNotBlank()
+                }.distinct()
+
+                return ResearchIntent(
+                    keyTerms = keyTerms,
+                    requiresMobile = requiresMobile,
+                    requiresLanguageModel = requiresLanguageModel,
+                    githubOnly = githubOnly,
+                    wikipediaQuery = wikipediaQuery,
+                    arxivQuery = arxivQuery,
+                    githubQueries = githubQueries
+                )
+            }
+        }
     }
 
     companion object {
@@ -393,6 +737,7 @@ class FreeResearchService {
         private const val READ_TIMEOUT_MS = 15000
         private const val MAX_RESPONSE_CHARS = 1000000
         private const val MAX_SUMMARY_CHARS = 1000
+        private const val MAX_PROVIDER_RESULTS = 5
         private const val MAX_TOTAL_RESULTS = 9
     }
 }
