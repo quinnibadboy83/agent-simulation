@@ -6,6 +6,7 @@ on:
     branches:
       - android/engine-app-foundation
       - android/local-inference-integration
+      - android/research-quality-phase-2
     paths:
       - "app/**"
       - "settings.gradle.kts"
