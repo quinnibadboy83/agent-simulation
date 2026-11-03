@@ -23,6 +23,7 @@ data class FreeResearchReport(
     val sources: List<FreeResearchSource>,
     val providerNotes: List<String>
 ) {
+
     fun toDisplayText(): String = buildString {
         appendLine("KAIRNEX — WEB RESEARCH")
         appendLine("Question: $query")
@@ -34,6 +35,13 @@ data class FreeResearchReport(
             appendLine("Provider: ${source.provider}")
             appendLine("URL: ${source.url}")
             appendLine(source.summary)
+            appendLine()
+            appendLine(
+                "SOURCE ASSESSMENT"
+            )
+            appendLine(
+                ResearchSourceAssessment.describe(source, sources)
+            )
             appendLine()
         }
 
@@ -58,6 +66,11 @@ data class FreeResearchReport(
             appendLine("Title: ${source.title}")
             appendLine("URL: ${source.url}")
             appendLine(source.summary)
+            appendLine(
+                "Assessment: ${
+                    ResearchSourceAssessment.describe(source, sources)
+                }"
+            )
         }
 
         appendLine()
@@ -71,10 +84,10 @@ data class FreeResearchReport(
 /**
  * Kairnex public-source research service.
  *
- * General web discovery is the primary route.
- * Specialist providers are supplementary.
+ * General web discovery remains the primary route.
+ * Wikipedia, arXiv and GitHub supplement it when relevant.
  *
- * Designed to remain separate from local LLM inference.
+ * This service does not depend on a paid search API key.
  * Calls must be made from a background thread.
  */
 class FreeResearchService {
@@ -90,12 +103,11 @@ class FreeResearchService {
             "Research question must be 400 characters or fewer."
         }
 
-        val intent = ResearchIntent.from(cleanQuery)
+        val plan = ResearchQueryPlanner.plan(cleanQuery)
         val sources = mutableListOf<FreeResearchSource>()
         val notes = mutableListOf<String>()
 
-        // General internet discovery remains the primary provider.
-        if (!intent.githubOnly) {
+        if (!plan.githubOnly) {
             runProvider("DuckDuckGo web search", notes) {
                 sources.addAll(searchWeb(cleanQuery, notes))
             }
@@ -104,30 +116,30 @@ class FreeResearchService {
                 sources.addAll(searchWikipedia(cleanQuery))
             }
 
-            if (intent.shouldSearchArxiv) {
+            if (plan.shouldSearchArxiv) {
                 runProvider("arXiv", notes) {
-                    sources.addAll(searchArxiv(intent.searchTerms))
+                    sources.addAll(searchArxiv(plan.searchTerms))
                 }
             }
 
-            if (intent.shouldSearchGitHub) {
+            if (plan.shouldSearchGitHub) {
                 runProvider("GitHub", notes) {
-                    sources.addAll(searchGitHub(intent.searchTerms))
+                    sources.addAll(searchGitHub(plan.searchTerms))
                 }
             }
         } else {
             runProvider("GitHub", notes) {
-                sources.addAll(searchGitHub(intent.searchTerms))
+                sources.addAll(searchGitHub(plan.searchTerms))
             }
         }
 
         val ranked = sources
             .filter { isHttpUrl(it.url) }
             .distinctBy {
-                it.url.trimEnd('/').lowercase(Locale.ROOT)
+                canonicalKey(it.url)
             }
             .map {
-                Pair(it, relevanceScore(cleanQuery, it))
+                it to relevanceScore(cleanQuery, it)
             }
             .sortedByDescending { it.second }
             .take(MAX_TOTAL_RESULTS)
@@ -135,39 +147,32 @@ class FreeResearchService {
 
         if (ranked.isEmpty()) {
             notes.add(
-                "No usable sources were retrieved. " +
-                    "The providers may have restricted access, " +
-                    "the network may be unavailable, or no matching " +
-                    "results may have been found."
+                "No usable sources were retrieved. Providers may have restricted access, the network may be unavailable, or no matching results may have been found."
             )
         }
 
         notes.add(
-            "General web discovery is performed separately from " +
-                "specialist searches. Specialist results supplement " +
-                "rather than replace general internet results."
+            "General web discovery is separate from specialist searches. Specialist results supplement rather than replace general internet results."
         )
 
         notes.add(
-            "Retrieved page content, search snippets, repository " +
-                "descriptions and paper abstracts are different " +
-                "evidence types. None automatically proves a claim."
+            "Retrieved page text, search snippets, repository descriptions and paper abstracts are different evidence types. None automatically proves a claim."
         )
 
         notes.add(
-            "Relevance ranking is an automated keyword-based estimate. " +
-                "It is not a guarantee of accuracy or credibility."
+            "Source classifications and cross-source matching are automated heuristics. They are not independent fact-checking or a guarantee of credibility."
         )
 
         notes.add(
-            "Some websites require JavaScript, authentication, " +
-                "cookies or human verification. This service cannot " +
-                "currently access every such page."
+            "A result appearing on multiple hosts does not necessarily mean the sources are independent or that they support the same conclusion."
         )
 
         notes.add(
-            "This service searches selected public providers. " +
-                "It is not a complete crawl of the internet."
+            "Some websites require JavaScript, authentication, cookies or human verification. This service cannot currently access every such page."
+        )
+
+        notes.add(
+            "This service searches selected public providers. It is not a complete crawl of the internet."
         )
 
         return FreeResearchReport(
@@ -186,73 +191,6 @@ class FreeResearchService {
             action()
         } catch (error: Exception) {
             notes.add("$name unavailable: ${safeMessage(error)}")
-        }
-    }
-
-    // ---------------------------------------------------------
-    // QUERY INTELLIGENCE
-    // ---------------------------------------------------------
-
-    private data class ResearchIntent(
-        val githubOnly: Boolean,
-        val shouldSearchGitHub: Boolean,
-        val shouldSearchArxiv: Boolean,
-        val searchTerms: String
-    ) {
-        companion object {
-            private val stopWords = setOf(
-                "a", "an", "and", "are", "as", "at", "be",
-                "by", "can", "could", "did", "do", "does",
-                "for", "from", "get", "give", "how", "i",
-                "in", "into", "is", "it", "latest", "me",
-                "my", "of", "on", "or", "our", "please",
-                "research", "show", "tell", "that", "the",
-                "their", "them", "these", "this", "those",
-                "to", "using", "use", "was", "we", "what",
-                "when", "where", "which", "who", "why",
-                "will", "with", "would", "you", "your"
-            )
-
-            fun from(query: String): ResearchIntent {
-                val normalized = query.lowercase(Locale.ROOT)
-
-                val githubOnly = Regex(
-                    """\b(only\s+(search|use)\s+github|github\s+only)\b"""
-                ).containsMatchIn(normalized)
-
-                val githubRequested = Regex(
-                    """\b(github|repository|repositories|repo|repos|source code|open source|software project|projects|project|library|libraries|sdk|implementation|code)\b"""
-                ).containsMatchIn(normalized)
-
-                val technical = Regex(
-                    """\b(llama\.cpp|gguf|llm|language model|android inference|machine learning|artificial intelligence|neural network|model training|model quantization|transformer)\b"""
-                ).containsMatchIn(normalized)
-
-                val scientific = Regex(
-                    """\b(scientific|science|paper|papers|study|studies|academic|arxiv|peer reviewed|research paper)\b"""
-                ).containsMatchIn(normalized)
-
-                val shouldSearchGitHub = githubRequested || technical
-
-                val shouldSearchArxiv = technical || scientific
-
-                val terms = Regex(
-                    """[a-zA-Z0-9][a-zA-Z0-9.+#_-]*"""
-                ).findAll(normalized)
-                    .map { it.value }
-                    .filter { it !in stopWords }
-                    .filter { it.length > 1 }
-                    .distinct()
-                    .take(10)
-                    .joinToString(" ")
-
-                return ResearchIntent(
-                    githubOnly = githubOnly,
-                    shouldSearchGitHub = shouldSearchGitHub,
-                    shouldSearchArxiv = shouldSearchArxiv,
-                    searchTerms = terms.ifBlank { query.trim() }
-                )
-            }
         }
     }
 
@@ -281,89 +219,99 @@ class FreeResearchService {
         val snippets = Regex(
             """(?is)<(?:a|div)\b[^>]*class=["'][^"']*result__snippet[^"']*["'][^>]*>(.*?)</(?:a|div)>"""
         ).findAll(html)
-            .map { cleanHtml(it.groupValues[1]) }
+            .map {
+                ResearchHtmlExtractor.cleanText(it.groupValues[1])
+            }
             .toList()
 
         if (resultLinks.isEmpty()) {
             notes.add(
-                "DuckDuckGo returned no parseable results. " +
-                    "The provider may have changed its response format " +
-                    "or restricted the request."
+                "DuckDuckGo returned no parseable results. The provider may have changed its response format or restricted the request."
             )
             return emptyList()
         }
 
         val output = mutableListOf<FreeResearchSource>()
 
-        resultLinks.take(MAX_WEB_RESULTS).forEachIndexed { index, match ->
+        resultLinks.take(MAX_WEB_RESULTS)
+            .forEachIndexed { index, match ->
 
-            val targetUrl = unwrapSearchUrl(
-                match.groupValues[1]
-            )
-
-            if (!isHttpUrl(targetUrl)) {
-                return@forEachIndexed
-            }
-
-            val title = cleanHtml(match.groupValues[2])
-                .ifBlank { "Untitled web result" }
-                .take(250)
-
-            val snippet = snippets.getOrNull(index)
-                .orEmpty()
-                .take(MAX_SUMMARY_CHARS)
-
-            var provider = "DuckDuckGo search snippet"
-
-            var summary = if (snippet.isBlank()) {
-                "Search provider supplied no readable snippet."
-            } else {
-                "Evidence type: Search result snippet.\n$snippet"
-            }
-
-            if (index < MAX_PAGES_TO_FETCH) {
-                try {
-                    val pageHtml = getText(
-                        targetUrl,
-                        "text/html,application/xhtml+xml"
-                    )
-
-                    val pageTitle = extractPageTitle(pageHtml)
-                    val pageText = extractPageText(pageHtml)
-
-                    if (pageText.length >= MIN_PAGE_TEXT_CHARS) {
-                        provider =
-                            "DuckDuckGo discovery + retrieved webpage"
-
-                        summary = buildString {
-                            appendLine("Evidence type: Retrieved webpage text.")
-                            if (pageTitle.isNotBlank()) {
-                                appendLine("Page title: $pageTitle")
-                            }
-                            append(pageText.take(MAX_PAGE_EVIDENCE_CHARS))
-                        }
-                    } else {
-                        summary +=
-                            "\nPage retrieval produced insufficient readable article text."
-                    }
-                } catch (error: Exception) {
-                    summary +=
-                        "\nFull page not retrieved: ${safeMessage(error)}"
-                }
-            } else {
-                summary +=
-                    "\nFull page not fetched because the retrieval limit was reached."
-            }
-
-            output.add(
-                FreeResearchSource(
-                    provider = provider,
-                    title = title,
-                    url = targetUrl,
-                    summary = summary.take(MAX_SUMMARY_CHARS)
+                val targetUrl = unwrapSearchUrl(
+                    match.groupValues[1]
                 )
-            )
-        }
+
+                if (!isHttpUrl(targetUrl)) {
+                    return@forEachIndexed
+                }
+
+                val title = ResearchHtmlExtractor.cleanText(
+                    match.groupValues[2]
+                ).ifBlank {
+                    "Untitled web result"
+                }.take(250)
+
+                val snippet = snippets.getOrNull(index)
+                    .orEmpty()
+                    .take(MAX_SUMMARY_CHARS)
+
+                var provider = "DuckDuckGo search snippet"
+
+                var summary = if (snippet.isBlank()) {
+                    "Evidence type: Search result snippet. No readable snippet was supplied."
+                } else {
+                    "Evidence type: Search result snippet.\n$snippet"
+                }
+
+                if (index < MAX_PAGES_TO_FETCH) {
+                    try {
+                        val pageHtml = getText(
+                            targetUrl,
+                            "text/html,application/xhtml+xml"
+                        )
+
+                        val pageTitle =
+                            ResearchHtmlExtractor.extractTitle(pageHtml)
+
+                        val pageText =
+                            ResearchHtmlExtractor.extractReadableText(pageHtml)
+
+                        if (pageText.length >= MIN_PAGE_TEXT_CHARS) {
+                            provider =
+                                "DuckDuckGo discovery + retrieved webpage"
+
+                            summary = buildString {
+                                appendLine(
+                                    "Evidence type: Retrieved webpage text."
+                                )
+
+                                if (pageTitle.isNotBlank()) {
+                                    appendLine("Page title: $pageTitle")
+                                }
+
+                                append(pageText)
+                            }
+                        } else {
+                            summary +=
+                                "\nPage retrieval produced insufficient readable article text."
+                        }
+                    } catch (error: Exception) {
+                        summary +=
+                            "\nFull page not retrieved: ${safeMessage(error)}"
+                    }
+                } else {
+                    summary +=
+                        "\nFull page not fetched because the retrieval limit was reached."
+                }
+
+                output.add(
+                    FreeResearchSource(
+                        provider = provider,
+                        title = title,
+                        url = targetUrl,
+                        summary = summary.take(MAX_SUMMARY_CHARS)
+                    )
+                )
+            }
 
         return output
     }
@@ -371,23 +319,27 @@ class FreeResearchService {
     private fun unwrapSearchUrl(value: String): String {
         val decoded = decodeHtml(value)
 
-        if (isHttpUrl(decoded)) {
-            return decoded
+        val direct = try {
+            URLDecoder.decode(decoded, "UTF-8")
+        } catch (_: Exception) {
+            decoded
         }
 
         val encodedTarget = Regex(
-            """[?&]uddg=([^&]+)"""
-        ).find(decoded)?.groupValues?.get(1)
+            """[?&](?:uddg|url)=([^&]+)"""
+        ).find(direct)?.groupValues?.get(1)
 
         if (!encodedTarget.isNullOrBlank()) {
-            return try {
+            val unwrapped = try {
                 URLDecoder.decode(encodedTarget, "UTF-8")
             } catch (_: Exception) {
-                decoded
+                encodedTarget
             }
+
+            if (isHttpUrl(unwrapped)) return unwrapped
         }
 
-        return decoded
+        return direct
     }
 
     // ---------------------------------------------------------
@@ -428,8 +380,9 @@ class FreeResearchService {
                         encode(title).replace("+", "_"),
                     summary =
                         "Evidence type: Wikipedia search snippet.\n" +
-                            cleanHtml(item.optString("snippet"))
-                                .take(MAX_SUMMARY_CHARS)
+                            ResearchHtmlExtractor.cleanText(
+                                item.optString("snippet")
+                            ).take(MAX_SUMMARY_CHARS)
                 )
             )
         }
@@ -448,20 +401,23 @@ class FreeResearchService {
         val terms = searchTerms
             .split(Regex("""\s+"""))
             .filter { it.length > 1 }
-            .take(6)
+            .take(4)
 
         if (terms.isEmpty()) return emptyList()
 
-        val expression = terms.joinToString(" AND ") {
+        // OR is intentionally used instead of requiring every query
+        // token. This avoids overly restrictive AND searches.
+        val expression = terms.joinToString(" OR ") {
             "all:${it.replace(Regex("[^a-zA-Z0-9.+_-]"), "")}"
         }
 
         val address =
             "https://export.arxiv.org/api/query" +
                 "?search_query=${encode(expression)}" +
-                "&start=0&max_results=6&sortBy=relevance"
+                "&start=0&max_results=8&sortBy=relevance"
 
         val parser = Xml.newPullParser()
+
         parser.setInput(
             getText(address, "application/atom+xml").reader()
         )
@@ -514,13 +470,9 @@ class FreeResearchService {
 
                 XmlPullParser.END_TAG -> {
                     if (parser.name == "entry" && inEntry) {
-
-                        val combined = "$title $summary"
-
-                        // Reject results with very weak topic overlap.
                         val score = keywordOverlap(
                             searchTerms,
-                            combined
+                            "$title $summary"
                         )
 
                         if (
@@ -530,12 +482,12 @@ class FreeResearchService {
                         ) {
                             output.add(
                                 FreeResearchSource(
-                                    provider = "arXiv scientific paper abstract",
+                                    provider =
+                                        "arXiv scientific paper abstract",
                                     title = title.take(250),
                                     url = id,
                                     summary =
-                                        "Evidence type: Scientific paper metadata and abstract. " +
-                                            "This is not an independent peer-review assessment.\n" +
+                                        "Evidence type: Scientific paper metadata and abstract. Peer-review status is not established by this result.\n" +
                                             summary.take(MAX_SUMMARY_CHARS)
                                 )
                             )
@@ -560,8 +512,6 @@ class FreeResearchService {
         searchTerms: String
     ): List<FreeResearchSource> {
 
-        // Do not send a complete natural-language question to GitHub.
-        // Build a concise repository search query instead.
         val safeTerms = searchTerms
             .split(Regex("""\s+"""))
             .filter { it.length > 1 }
@@ -606,28 +556,29 @@ class FreeResearchService {
             var summary = buildString {
                 appendLine("Evidence type: Public repository metadata.")
                 appendLine("Repository description: $description")
+
                 if (language.isNotBlank()) {
                     appendLine("Primary language: $language")
                 }
+
                 appendLine("Stars at retrieval: $stars")
                 appendLine(
                     "Popularity is not proof of technical quality or security."
                 )
             }
 
-            // Fetch README separately where public access permits.
             try {
                 val readme = getText(
                     "https://api.github.com/repos/$name/readme",
                     "application/vnd.github.raw+json"
                 )
 
-                val evidence = cleanHtml(readme)
-                    .take(MAX_PAGE_EVIDENCE_CHARS)
+                val evidence =
+                    ResearchHtmlExtractor.cleanText(readme)
+                        .take(MAX_PAGE_EVIDENCE_CHARS)
 
                 if (evidence.isNotBlank()) {
-                    summary +=
-                        "\nREADME evidence retrieved:\n$evidence"
+                    summary += "\nREADME evidence retrieved:\n$evidence"
                 }
             } catch (error: Exception) {
                 summary +=
@@ -655,13 +606,11 @@ class FreeResearchService {
         query: String,
         source: FreeResearchSource
     ): Int {
-        val text = (
-            source.title + " " +
-                source.summary
-            ).lowercase(Locale.ROOT)
+        val titleScore =
+            keywordOverlap(query, source.title) * 3
 
-        val titleScore = keywordOverlap(query, source.title) * 3
-        val bodyScore = keywordOverlap(query, text)
+        val bodyScore =
+            keywordOverlap(query, source.summary)
 
         return titleScore + bodyScore
     }
@@ -680,118 +629,10 @@ class FreeResearchService {
         val target = text.lowercase(Locale.ROOT)
 
         return words.count { word ->
-            target.contains(word)
+            Regex(
+                """(?<![a-z0-9])${Regex.escape(word)}(?![a-z0-9])"""
+            ).containsMatchIn(target)
         }
-    }
-
-    // ---------------------------------------------------------
-    // WEBPAGE EXTRACTION
-    // ---------------------------------------------------------
-
-    private fun extractPageTitle(html: String): String {
-        val match = Regex(
-            """(?is)<title[^>]*>(.*?)</title>"""
-        ).find(html) ?: return ""
-
-        return cleanHtml(match.groupValues[1]).take(250)
-    }
-
-    private fun extractPageText(html: String): String {
-
-        // Prefer article/main content when a site provides it.
-        val preferred = Regex(
-            """(?is)<(?:article|main)\b[^>]*>(.*?)</(?:article|main)>"""
-        ).find(html)?.groupValues?.get(1)
-
-        val source = preferred ?: html
-
-        val cleaned = source
-            .replace(
-                Regex("""(?is)<script\b[^>]*>.*?</script>"""),
-                " "
-            )
-            .replace(
-                Regex("""(?is)<style\b[^>]*>.*?</style>"""),
-                " "
-            )
-            .replace(
-                Regex("""(?is)<noscript\b[^>]*>.*?</noscript>"""),
-                " "
-            )
-            .replace(
-                Regex("""(?is)<svg\b[^>]*>.*?</svg>"""),
-                " "
-            )
-            .replace(
-                Regex("""(?is)<nav\b[^>]*>.*?</nav>"""),
-                " "
-            )
-            .replace(
-                Regex("""(?is)<header\b[^>]*>.*?</header>"""),
-                " "
-            )
-            .replace(
-                Regex("""(?is)<footer\b[^>]*>.*?</footer>"""),
-                " "
-            )
-            .replace(
-                Regex("""(?is)<aside\b[^>]*>.*?</aside>"""),
-                " "
-            )
-            .replace(
-                Regex("""(?is)<form\b[^>]*>.*?</form>"""),
-                " "
-            )
-            .replace(
-                Regex("""(?is)<button\b[^>]*>.*?</button>"""),
-                " "
-            )
-
-        return cleanHtml(cleaned)
-            .take(MAX_PAGE_EVIDENCE_CHARS)
-    }
-
-    private fun cleanHtml(value: String): String {
-        return decodeHtml(
-            value
-                .replace(Regex("""(?is)<[^>]*>"""), " ")
-                .replace(Regex("""\s+"""), " ")
-        ).trim()
-    }
-
-    private fun decodeHtml(value: String): String {
-        var result = value
-            .replace("&quot;", "\"")
-            .replace("&#34;", "\"")
-            .replace("&#039;", "'")
-            .replace("&#39;", "'")
-            .replace("&apos;", "'")
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&nbsp;", " ")
-
-        val numericEntities = Regex(
-            """&#(x[0-9a-fA-F]+|[0-9]+);"""
-        )
-
-        result = numericEntities.replace(result) { match ->
-            try {
-                val raw = match.groupValues[1]
-
-                val codePoint = if (raw.startsWith("x", true)) {
-                    raw.substring(1).toInt(16)
-                } else {
-                    raw.toInt()
-                }
-
-                String(Character.toChars(codePoint))
-            } catch (_: Exception) {
-                " "
-            }
-        }
-
-        return result
     }
 
     // ---------------------------------------------------------
@@ -802,7 +643,6 @@ class FreeResearchService {
         address: String,
         accept: String
     ): String {
-
         val url = URL(address)
 
         require(
@@ -823,7 +663,7 @@ class FreeResearchService {
             connection.setRequestProperty("Accept", accept)
             connection.setRequestProperty(
                 "User-Agent",
-                "KairnexResearch/0.5 (public-source research)"
+                "KairnexResearch/0.6 (public-source research)"
             )
 
             val status = connection.responseCode
@@ -836,16 +676,15 @@ class FreeResearchService {
                 "Source returned HTTP $status."
             )
 
-            // Read only up to the permitted response size.
-            // This prevents an unexpectedly large page being loaded
-            // completely into memory before the size check.
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
 
             stream.use { input ->
                 var total = 0
+
                 while (true) {
                     val count = input.read(buffer)
+
                     if (count == -1) break
 
                     total += count
@@ -894,8 +733,27 @@ class FreeResearchService {
             value.startsWith("http://")
     }
 
+    private fun canonicalKey(value: String): String {
+        return value.trim()
+            .removeSuffix("/")
+            .lowercase(Locale.ROOT)
+    }
+
     private fun encode(value: String): String {
         return URLEncoder.encode(value, "UTF-8")
+    }
+
+    private fun decodeHtml(value: String): String {
+        return value
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#34;", "\"")
+            .replace("&#039;", "'")
+            .replace("&#39;", "'")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&nbsp;", " ")
     }
 
     private fun safeMessage(error: Throwable): String {
