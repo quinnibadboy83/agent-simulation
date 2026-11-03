@@ -15,13 +15,16 @@ import javax.crypto.spec.GCMParameterSpec
 /**
  * Encrypted, device-local storage for website credentials.
  *
- * AES-256-GCM encryption is performed with a key held in Android Keystore.
- * The encrypted records are stored separately from website profiles.
+ * AES-256-GCM encryption uses a key held in Android Keystore.
+ * Encrypted records are stored separately from website profiles.
  *
  * Never put returned credentials into an agent prompt, memory record,
  * audit event, or ordinary application log.
  */
-class WebsiteCredentialVault(context: Context) {
+class WebsiteCredentialVault(
+    context: Context,
+    private val registry: WebsiteAccessRegistry
+) {
 
     private val preferences = context.applicationContext
         .getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -32,6 +35,10 @@ class WebsiteCredentialVault(context: Context) {
         credentials: WebsiteCredentials
     ) {
         validateSiteId(siteId)
+
+        require(registry.get(siteId) != null) {
+            "Register this website before saving its credentials."
+        }
 
         require(!credentials.isEmpty()) {
             "At least one credential field must be provided."
@@ -79,11 +86,11 @@ class WebsiteCredentialVault(context: Context) {
     }
 
     /**
-     * Retrieves credentials only after the permission policy approves
-     * this site's account-read access.
+     * Credentials can only be retrieved for a registered website
+     * when a valid grant permits account access.
      *
-     * This is an integration-level API, not permission to expose secrets
-     * to an LLM or user-facing logs.
+     * This API is for trusted integrations only. It must never pass
+     * credentials to an LLM, agent prompt, or ordinary application log.
      */
     @Synchronized
     fun getForAuthorizedUse(
@@ -93,10 +100,7 @@ class WebsiteCredentialVault(context: Context) {
     ): WebsiteCredentials? {
         validateSiteId(siteId)
 
-        val profile = WebsiteAccessRegistryContextHolder
-            .registry
-            ?.get(siteId)
-            ?: return null
+        val profile = registry.get(siteId) ?: return null
 
         val decision = policy.evaluate(
             profile = profile,
@@ -155,8 +159,8 @@ class WebsiteCredentialVault(context: Context) {
             ?: JSONObject()
 
         val extras = mutableMapOf<String, String>()
-
         val keys = extrasObject.keys()
+
         while (keys.hasNext()) {
             val keyName = keys.next()
             extras[keyName] = extrasObject.optString(keyName)
@@ -187,9 +191,7 @@ class WebsiteCredentialVault(context: Context) {
 
     @Synchronized
     fun clearAll() {
-        check(
-            preferences.edit().clear().commit()
-        ) {
+        check(preferences.edit().clear().commit()) {
             "Could not clear website credentials."
         }
 
@@ -266,13 +268,4 @@ class WebsiteCredentialVault(context: Context) {
         private const val GCM_TAG_LENGTH_BITS = 128
         private const val MAX_FIELD_LENGTH = 4096
     }
-}
-
-/**
- * Temporary registry hand-off for the first integration stage.
- * The owner-facing registry screen will replace this holder when added.
- */
-internal object WebsiteAccessRegistryContextHolder {
-    @Volatile
-    var registry: WebsiteAccessRegistry? = null
 }
