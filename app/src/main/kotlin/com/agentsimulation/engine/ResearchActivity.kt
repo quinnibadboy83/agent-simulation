@@ -12,12 +12,16 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
  * Separate Researcher screen.
- * MainActivity and the native local inference engine remain untouched.
+ *
+ * The existing MainActivity and native local inference engine
+ * remain untouched.
  */
 class ResearchActivity : Activity() {
 
@@ -77,13 +81,17 @@ class ResearchActivity : Activity() {
             minLines = 3
             maxLines = 5
             gravity = Gravity.TOP
+
             setText(
-                savedInstanceState?.getString(STATE_QUERY).orEmpty()
+                savedInstanceState
+                    ?.getString(STATE_QUERY)
+                    .orEmpty()
             )
         }
 
         searchButton = Button(this).apply {
             text = "Search public sources"
+
             setOnClickListener {
                 runResearch()
             }
@@ -92,6 +100,7 @@ class ResearchActivity : Activity() {
         saveButton = Button(this).apply {
             text = "Save research to persistent memory"
             isEnabled = false
+
             setOnClickListener {
                 saveLatestReport()
             }
@@ -100,14 +109,16 @@ class ResearchActivity : Activity() {
         statusText = TextView(this).apply {
             textSize = 14f
             text =
-                "Ready. Sources: Wikipedia, arXiv and GitHub where relevant."
+                "Ready. Sources: general web, Wikipedia, arXiv and GitHub where relevant."
             setTextIsSelectable(true)
         }
 
         resultText = TextView(this).apply {
             textSize = 14f
-            text = savedInstanceState?.getString(STATE_RESULT)
+            text = savedInstanceState
+                ?.getString(STATE_RESULT)
                 ?: "Your research results will appear here."
+
             setTextIsSelectable(true)
         }
 
@@ -140,6 +151,23 @@ class ResearchActivity : Activity() {
                 STATE_STATUS,
                 "Ready."
             )
+
+            latestReport = savedInstanceState
+                .getString(STATE_REPORT_JSON)
+                ?.let { decodeReport(it) }
+
+            saveButton.isEnabled = latestReport != null
+
+            val wasSearching = savedInstanceState.getBoolean(
+                STATE_SEARCHING,
+                false
+            )
+
+            if (wasSearching) {
+                statusText.text =
+                    "The previous search was interrupted by screen recreation. Start the search again."
+                searchButton.isEnabled = true
+            }
         }
     }
 
@@ -165,14 +193,32 @@ class ResearchActivity : Activity() {
             )
         }
 
+        outState.putBoolean(
+            STATE_SEARCHING,
+            ::searchButton.isInitialized &&
+                !searchButton.isEnabled
+        )
+
+        latestReport?.let { report ->
+            outState.putString(
+                STATE_REPORT_JSON,
+                encodeReport(report)
+            )
+        }
+
         super.onSaveInstanceState(outState)
     }
+
+    // ---------------------------------------------------------
+    // RESEARCH
+    // ---------------------------------------------------------
 
     private fun runResearch() {
         val query = queryInput.text.toString().trim()
 
         if (query.isEmpty()) {
-            statusText.text = "Enter a research question first."
+            statusText.text =
+                "Enter a research question first."
             return
         }
 
@@ -189,7 +235,8 @@ class ResearchActivity : Activity() {
         statusText.text =
             "Searching public sources. This can take several seconds."
 
-        resultText.text = "Research in progress..."
+        resultText.text =
+            "Research in progress..."
 
         executor.execute {
             try {
@@ -201,10 +248,12 @@ class ResearchActivity : Activity() {
                     }
 
                     latestReport = report
-                    resultText.text = report.toDisplayText()
+
+                    resultText.text =
+                        report.toDisplayText()
 
                     statusText.text =
-                        "Research complete. ${report.sources.size} source(s) collected. Review the limitations in the report."
+                        "Research complete. ${report.sources.size} source(s) collected. Review the source assessments and limitations."
 
                     saveButton.isEnabled = true
                     searchButton.isEnabled = true
@@ -231,6 +280,10 @@ class ResearchActivity : Activity() {
         }
     }
 
+    // ---------------------------------------------------------
+    // PERSISTENT MEMORY
+    // ---------------------------------------------------------
+
     private fun saveLatestReport() {
         val report = latestReport
 
@@ -254,6 +307,105 @@ class ResearchActivity : Activity() {
         }
     }
 
+    // ---------------------------------------------------------
+    // REPORT ROTATION STATE
+    // ---------------------------------------------------------
+
+    private fun encodeReport(
+        report: FreeResearchReport
+    ): String {
+        val sourceArray = JSONArray()
+
+        report.sources.forEach { source ->
+            sourceArray.put(
+                JSONObject().apply {
+                    put("provider", source.provider)
+                    put("title", source.title)
+                    put("url", source.url)
+                    put("summary", source.summary)
+                }
+            )
+        }
+
+        val notesArray = JSONArray()
+
+        report.providerNotes.forEach {
+            notesArray.put(it)
+        }
+
+        return JSONObject().apply {
+            put("query", report.query)
+            put("sources", sourceArray)
+            put("providerNotes", notesArray)
+        }.toString()
+    }
+
+    private fun decodeReport(
+        json: String
+    ): FreeResearchReport? {
+        return try {
+            val root = JSONObject(json)
+
+            val query = root.optString("query")
+            val sourceArray = root.optJSONArray("sources")
+                ?: return null
+
+            val notesArray = root.optJSONArray("providerNotes")
+                ?: JSONArray()
+
+            val sources = mutableListOf<FreeResearchSource>()
+
+            for (index in 0 until sourceArray.length()) {
+                val item = sourceArray.optJSONObject(index)
+                    ?: continue
+
+                val url = item.optString("url")
+
+                if (
+                    !url.startsWith("https://") &&
+                    !url.startsWith("http://")
+                ) {
+                    continue
+                }
+
+                sources.add(
+                    FreeResearchSource(
+                        provider = item.optString("provider"),
+                        title = item.optString("title"),
+                        url = url,
+                        summary = item.optString("summary")
+                    )
+                )
+            }
+
+            val notes = mutableListOf<String>()
+
+            for (index in 0 until notesArray.length()) {
+                val note = notesArray.optString(index)
+
+                if (note.isNotBlank()) {
+                    notes.add(note)
+                }
+            }
+
+            if (query.isBlank()) {
+                return null
+            }
+
+            FreeResearchReport(
+                query = query,
+                sources = sources,
+                providerNotes = notes
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // ---------------------------------------------------------
+    // UI HELPERS
+    // ---------------------------------------------------------
+
     private fun spacer(heightDp: Int): TextView {
         return TextView(this).apply {
             height = (
@@ -269,8 +421,19 @@ class ResearchActivity : Activity() {
     }
 
     companion object {
-        private const val STATE_QUERY = "research_query"
-        private const val STATE_RESULT = "research_result"
-        private const val STATE_STATUS = "research_status"
+        private const val STATE_QUERY =
+            "research_query"
+
+        private const val STATE_RESULT =
+            "research_result"
+
+        private const val STATE_STATUS =
+            "research_status"
+
+        private const val STATE_REPORT_JSON =
+            "research_report_json"
+
+        private const val STATE_SEARCHING =
+            "research_searching"
     }
 }
