@@ -25,6 +25,23 @@
             android:label="Free Researcher"
             android:exported="false" />
 
+        <activity
+            android:name=".WebsiteCredentialActivity"
+            android:label="Website Credentials"
+            android:exported="false" />
+
+        <activity
+            android:name=".WebsiteAccessActivity"
+            android:label="Website Access"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
     </application>
 
 </manifest>
