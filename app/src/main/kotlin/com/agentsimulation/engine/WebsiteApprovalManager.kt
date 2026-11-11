@@ -2,7 +2,7 @@
 package com.agentsimulation.engine
 
 import android.app.Activity
-import androidx.appcompat.app.AlertDialog
+import android.app.AlertDialog
 
 /**
  * Presents explicit owner approval for sensitive website actions.
@@ -21,6 +21,11 @@ class WebsiteApprovalManager(
         action: WebsiteAction,
         callback: (WebsiteAccessGrant?) -> Unit
     ) {
+        if (activity.isFinishing || activity.isDestroyed) {
+            callback(null)
+            return
+        }
+
         if (!profile.enabled) {
             callback(null)
             return
